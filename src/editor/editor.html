@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Book Donation to MARC</title>
+    <link rel="stylesheet" href="./editor.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <h1>Book Donation to MARC</h1>
+        <p class="subtitle">Upload a filled Excel template, review MARC fields, and export records.</p>
+      </div>
+      <a
+        class="sample-link"
+        href="/BookDonationTemplate.xlsx"
+        download="BookDonationTemplate.xlsx"
+        aria-label="Download sample Book Donation template"
+      >
+        Download template
+      </a>
+    </header>
+
+    <main class="app-main">
+      <section class="panel upload-panel" aria-labelledby="upload-heading">
+        <h2 id="upload-heading">Upload workbook</h2>
+        <div
+          id="drop-zone"
+          class="drop-zone"
+          tabindex="0"
+          role="button"
+          aria-label="Upload Excel file by clicking or dragging a file here"
+        >
+          <p>Drag and drop an `.xlsx` file here, or click to browse.</p>
+          <input
+            id="file-input"
+            type="file"
+            accept=".xlsx,.xls"
+            aria-label="Choose Excel workbook"
+          />
+        </div>
+        <p id="upload-status" class="status-message" role="status" aria-live="polite"></p>
+      </section>
+
+      <div id="workspace" class="workspace hidden">
+        <aside class="panel record-list-panel" aria-labelledby="records-heading">
+          <div class="panel-header">
+            <h2 id="records-heading">Records</h2>
+            <span id="record-count" class="badge"></span>
+          </div>
+          <ul id="record-list" class="record-list" role="listbox" aria-label="Imported records"></ul>
+        </aside>
+
+        <section class="panel editor-panel" aria-labelledby="editor-heading">
+          <div class="panel-header editor-header">
+            <div>
+              <h2 id="editor-heading">Field editor</h2>
+              <p id="selected-record-meta" class="meta-text"></p>
+            </div>
+            <div class="editor-actions">
+              <button id="prev-record" type="button" aria-label="Previous record">Previous</button>
+              <button id="next-record" type="button" aria-label="Next record">Next</button>
+              <button id="add-field" type="button">Add field</button>
+              <label class="toggle">
+                <input id="advanced-toggle" type="checkbox" />
+                Advanced MARC view
+              </label>
+            </div>
+          </div>
+
+          <div id="leader-editor" class="leader-editor"></div>
+          <div id="field-editor" class="field-editor"></div>
+
+          <section class="preview-panel" aria-labelledby="preview-heading">
+            <h3 id="preview-heading">MARC21 preview</h3>
+            <pre id="marc-preview" class="marc-preview" aria-label="Live MARC21 preview"></pre>
+          </section>
+
+          <section class="export-panel" aria-labelledby="export-heading">
+            <h3 id="export-heading">Export</h3>
+            <div class="export-actions">
+              <button id="export-text" type="button">Download .txt</button>
+              <button id="export-xml" type="button">Download .xml</button>
+              <button id="export-mrc" type="button">Download .mrc</button>
+            </div>
+            <p class="meta-text">Exports include all loaded records. Edits to the selected record are saved automatically.</p>
+          </section>
+        </section>
+      </div>
+    </main>
+
+    <script type="module" src="./editor.js"></script>
+  </body>
+</html>

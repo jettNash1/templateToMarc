@@ -1,0 +1,16 @@
+{
+  "name": "template-to-marc",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/generate-icons.js && vite build && node scripts/post-build.js",
+    "dev": "vite build --watch"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "vite": "^6.0.3"
+  }
+}
