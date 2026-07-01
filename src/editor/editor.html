@@ -3,41 +3,41 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Book Donation to MARC</title>
+    <title>CSV to MARC</title>
     <link rel="stylesheet" href="./editor.css" />
   </head>
   <body>
     <header class="app-header">
       <div>
-        <h1>Book Donation to MARC</h1>
-        <p class="subtitle">Upload a filled Excel template, review MARC fields, and export records.</p>
+        <h1>CSV to MARC</h1>
+        <p class="subtitle">Convert spreadsheet rows into MARC21 records. Row 1 headers define the field mapping; data rows hold the values.</p>
       </div>
       <a
         class="sample-link"
         href="/BookDonationTemplate.xlsx"
         download="BookDonationTemplate.xlsx"
-        aria-label="Download sample Book Donation template"
+        aria-label="Download example spreadsheet with MARC header mappings"
       >
-        Download template
+        Download example spreadsheet
       </a>
     </header>
 
     <main class="app-main">
       <section class="panel upload-panel" aria-labelledby="upload-heading">
-        <h2 id="upload-heading">Upload workbook</h2>
+        <h2 id="upload-heading">Upload file</h2>
         <div
           id="drop-zone"
           class="drop-zone"
           tabindex="0"
           role="button"
-          aria-label="Upload Excel file by clicking or dragging a file here"
+          aria-label="Upload CSV or Excel file by clicking or dragging a file here"
         >
-          <p>Drag and drop an `.xlsx` file here, or click to browse.</p>
+          <p>Drag and drop a `.csv`, `.xlsx`, or `.xls` file here, or click to browse. Row 1 must include MARC notation in each mapped column header.</p>
           <input
             id="file-input"
             type="file"
-            accept=".xlsx,.xls"
-            aria-label="Choose Excel workbook"
+            accept=".csv,.xlsx,.xls"
+            aria-label="Choose CSV or Excel file"
           />
         </div>
         <p id="upload-status" class="status-message" role="status" aria-live="polite"></p>
@@ -49,6 +49,11 @@
             <h2 id="records-heading">Records</h2>
             <span id="record-count" class="badge"></span>
           </div>
+          <section id="mapping-summary" class="mapping-summary" aria-labelledby="mapping-summary-heading">
+            <h3 id="mapping-summary-heading">Column mapping</h3>
+            <p id="mapping-summary-text" class="meta-text"></p>
+            <ul id="mapping-skipped-list" class="mapping-skipped-list"></ul>
+          </section>
           <ul id="record-list" class="record-list" role="listbox" aria-label="Imported records"></ul>
         </aside>
 
@@ -61,7 +66,7 @@
             <div class="editor-actions">
               <button id="prev-record" type="button" aria-label="Previous record">Previous</button>
               <button id="next-record" type="button" aria-label="Next record">Next</button>
-              <button id="add-field" type="button">Add field</button>
+              <button id="add-field" type="button">Add MARC field</button>
               <label class="toggle">
                 <input id="advanced-toggle" type="checkbox" />
                 Advanced MARC view
@@ -89,6 +94,58 @@
         </section>
       </div>
     </main>
+
+    <div id="add-field-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="add-field-title">
+      <div class="modal-backdrop" data-close-modal tabindex="-1" aria-hidden="true"></div>
+      <div class="modal-card">
+        <h2 id="add-field-title">Add MARC field</h2>
+        <form id="add-field-form">
+          <fieldset class="modal-fieldset">
+            <legend>Field type</legend>
+            <label class="radio-label">
+              <input type="radio" name="field-type" value="data" checked />
+              Data field
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="field-type" value="control" />
+              Control field
+            </label>
+          </fieldset>
+
+          <label class="modal-label">
+            Tag
+            <input id="add-field-tag" type="text" maxlength="3" pattern="\d{3}" required aria-label="MARC tag" placeholder="245" />
+          </label>
+
+          <div id="add-field-data-options">
+            <div class="field-grid">
+              <label class="modal-label">
+                Ind1
+                <input id="add-field-ind1" type="text" maxlength="1" aria-label="Indicator 1" placeholder=" " />
+              </label>
+              <label class="modal-label">
+                Ind2
+                <input id="add-field-ind2" type="text" maxlength="1" aria-label="Indicator 2" placeholder=" " />
+              </label>
+            </div>
+            <div id="add-field-subfields" class="subfield-list"></div>
+            <button id="add-modal-subfield" type="button" class="secondary">Add subfield</button>
+          </div>
+
+          <label id="add-field-control-value-wrap" class="modal-label hidden">
+            Value
+            <input id="add-field-control-value" type="text" aria-label="Control field value" />
+          </label>
+
+          <p id="add-field-error" class="status-message error hidden" role="alert"></p>
+
+          <div class="modal-actions">
+            <button type="button" class="secondary" data-close-modal>Cancel</button>
+            <button type="submit">Add field</button>
+          </div>
+        </form>
+      </div>
+    </div>
 
     <script type="module" src="./editor.js"></script>
   </body>

@@ -303,6 +303,89 @@ textarea {
   margin-bottom: 0.75rem;
 }
 
+.mapping-summary {
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.mapping-summary h3 {
+  font-size: 0.95rem;
+  margin-bottom: 0.35rem;
+}
+
+.mapping-skipped-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.modal.hidden {
+  display: none;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.modal-card {
+  position: relative;
+  width: min(560px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  background: var(--panel);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 1.25rem;
+  border: 1px solid var(--border);
+}
+
+.modal-fieldset {
+  border: 0;
+  margin: 0 0 1rem;
+  padding: 0;
+  display: flex;
+  gap: 1rem;
+}
+
+.modal-fieldset legend {
+  width: 100%;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.radio-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.modal-label {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 0.85rem;
+  font-size: 0.875rem;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
 @media (max-width: 960px) {
   .workspace {
     grid-template-columns: 1fr;

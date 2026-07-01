@@ -1,5 +1,13 @@
-import { parseWorkbook } from '../lib/xlsx-import.js';
-import { buildMarcRecords, cloneMarcRecord, createEmptyDataField } from '../lib/marc-builder.js';
+import { parseFile } from '../lib/file-import.js';
+import {
+  buildMarcRecords,
+  cloneMarcRecord,
+  collectFieldGroups,
+  createControlField,
+  createDataField,
+  isProtectedControlTag,
+} from '../lib/marc-builder.js';
+import { inferFieldGroup } from '../lib/header-parser.js';
 import {
   downloadBinaryFile,
   downloadTextFile,
@@ -8,12 +16,12 @@ import {
   recordsToMarcText,
   recordsToMarcXml,
 } from '../lib/marc-export.js';
-import { FIELD_GROUPS } from '../lib/template-mapping.js';
 
 /** @typedef {import('../lib/marc-builder.js').MarcRecord} MarcRecord */
 /** @typedef {import('../lib/marc-builder.js').MarcField} MarcField */
 /** @typedef {import('../lib/marc-builder.js').MarcDataField} MarcDataField */
-/** @typedef {import('../lib/xlsx-import.js').ParsedRow} ParsedRow */
+/** @typedef {import('../lib/file-import.js').ParsedRow} ParsedRow */
+/** @typedef {import('../lib/header-parser.js').ColumnSchema} ColumnSchema */
 
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
@@ -21,6 +29,8 @@ const uploadStatus = document.getElementById('upload-status');
 const workspace = document.getElementById('workspace');
 const recordList = document.getElementById('record-list');
 const recordCount = document.getElementById('record-count');
+const mappingSummaryText = document.getElementById('mapping-summary-text');
+const mappingSkippedList = document.getElementById('mapping-skipped-list');
 const selectedRecordMeta = document.getElementById('selected-record-meta');
 const leaderEditor = document.getElementById('leader-editor');
 const fieldEditor = document.getElementById('field-editor');
@@ -32,11 +42,26 @@ const addFieldButton = document.getElementById('add-field');
 const exportTextButton = document.getElementById('export-text');
 const exportXmlButton = document.getElementById('export-xml');
 const exportMrcButton = document.getElementById('export-mrc');
+const addFieldModal = document.getElementById('add-field-modal');
+const addFieldForm = document.getElementById('add-field-form');
+const addFieldTagInput = document.getElementById('add-field-tag');
+const addFieldInd1Input = document.getElementById('add-field-ind1');
+const addFieldInd2Input = document.getElementById('add-field-ind2');
+const addFieldDataOptions = document.getElementById('add-field-data-options');
+const addFieldControlValueWrap = document.getElementById('add-field-control-value-wrap');
+const addFieldControlValueInput = document.getElementById('add-field-control-value');
+const addFieldSubfieldsContainer = document.getElementById('add-field-subfields');
+const addModalSubfieldButton = document.getElementById('add-modal-subfield');
+const addFieldError = document.getElementById('add-field-error');
 
 /** @type {ParsedRow[]} */
 let parsedRows = [];
 /** @type {MarcRecord[]} */
 let marcRecords = [];
+/** @type {ColumnSchema[]} */
+let columnSchema = [];
+/** @type {import('../lib/header-parser.js').HeaderParseResult['skipped']} */
+let skippedColumns = [];
 let selectedIndex = 0;
 let advancedView = false;
 
@@ -71,6 +96,17 @@ function selectRecord(index) {
 
 /**
  * @param {MarcField} field
+ * @returns {string}
+ */
+function getFieldGroup(field) {
+  if (field.type === 'control') {
+    return 'Control';
+  }
+  return field.group ?? inferFieldGroup(field.tag);
+}
+
+/**
+ * @param {MarcField} field
  * @param {number} fieldIndex
  * @param {MarcRecord} record
  */
@@ -100,7 +136,8 @@ function renderFieldCard(field, fieldIndex, record) {
   });
 
   header.append(label);
-  if (field.type !== 'control' || !['001', '005', '008'].includes(field.tag)) {
+  const canRemove = field.type !== 'control' || !isProtectedControlTag(field.tag);
+  if (canRemove) {
     header.append(removeButton);
   }
 
@@ -129,6 +166,7 @@ function renderFieldCard(field, fieldIndex, record) {
     grid.append(
       createInputField('Tag', field.tag, (value) => {
         field.tag = value.padStart(3, '0').slice(-3);
+        field.group = inferFieldGroup(field.tag);
         renderPreview(record);
       }),
       createInputField('Ind1', field.ind1, (value) => {
@@ -262,17 +300,19 @@ function renderLeader(record) {
  * @param {MarcRecord} record
  */
 function renderEditor(record) {
-  selectedRecordMeta.textContent = `Excel row ${record.sourceRowNumber}`;
+  selectedRecordMeta.textContent = `Source row ${record.sourceRowNumber}`;
   renderLeader(record);
   fieldEditor.innerHTML = '';
 
-  const groupedFields = FIELD_GROUPS.filter((group) => group !== 'Control').map((groupName) => {
+  const groups = collectFieldGroups(record);
+
+  for (const groupName of groups) {
     const fields = record.fields
       .map((field, index) => ({ field, index }))
-      .filter(({ field }) => (field.group ?? 'Notes') === groupName);
+      .filter(({ field }) => getFieldGroup(field) === groupName);
 
     if (fields.length === 0) {
-      return null;
+      continue;
     }
 
     const section = document.createElement('section');
@@ -283,25 +323,25 @@ function renderEditor(record) {
       section.append(renderFieldCard(field, index, record));
     });
 
-    return section;
-  }).filter(Boolean);
-
-  const controlFields = record.fields
-    .map((field, index) => ({ field, index }))
-    .filter(({ field }) => field.type === 'control');
-
-  if (controlFields.length > 0) {
-    const section = document.createElement('section');
-    section.className = 'field-group';
-    section.innerHTML = '<h3 class="field-group-title">Control</h3>';
-    controlFields.forEach(({ field, index }) => {
-      section.append(renderFieldCard(field, index, record));
-    });
-    groupedFields.unshift(section);
+    fieldEditor.append(section);
   }
 
-  groupedFields.forEach((section) => fieldEditor.append(section));
   renderPreview(record);
+}
+
+function renderMappingSummary() {
+  const skippedCount = skippedColumns.length;
+  const mappedCount = columnSchema.length;
+  mappingSummaryText.textContent = `Parsed ${mappedCount} MARC column${mappedCount === 1 ? '' : 's'}${
+    skippedCount > 0 ? `, skipped ${skippedCount} without MARC notation` : ''
+  }.`;
+
+  mappingSkippedList.innerHTML = '';
+  for (const skipped of skippedColumns) {
+    const item = document.createElement('li');
+    item.textContent = skipped.label;
+    mappingSkippedList.append(item);
+  }
 }
 
 function renderRecordList() {
@@ -309,14 +349,15 @@ function renderRecordList() {
   recordCount.textContent = `${marcRecords.length} record${marcRecords.length === 1 ? '' : 's'}`;
 
   marcRecords.forEach((record, index) => {
+    const row = parsedRows[index];
     const item = document.createElement('li');
     item.className = 'record-item';
     item.setAttribute('role', 'option');
     item.setAttribute('aria-selected', String(index === selectedIndex));
     item.tabIndex = 0;
     item.innerHTML = `
-      <div class="record-item-title">${escapeHtml(record.sourceValues[7] ?? '(No title)')}</div>
-      <div class="record-item-author">${escapeHtml(record.sourceValues[1] ?? '(No author)')}</div>
+      <div class="record-item-title">${escapeHtml(row?.previewTitle ?? '(No title)')}</div>
+      <div class="record-item-author">${escapeHtml(row?.previewAuthor ?? '(No author)')}</div>
       <div class="record-item-row">Row ${record.sourceRowNumber}</div>
     `;
 
@@ -356,17 +397,141 @@ async function handleFile(file) {
 
   try {
     const buffer = await file.arrayBuffer();
-    parsedRows = await parseWorkbook(buffer);
-    marcRecords = buildMarcRecords(parsedRows).map((record) => cloneMarcRecord(record));
+    const result = await parseFile(buffer, file.name);
+    columnSchema = result.columnSchema;
+    skippedColumns = result.skippedColumns;
+    parsedRows = result.rows;
+    marcRecords = buildMarcRecords(parsedRows, columnSchema).map((record) => cloneMarcRecord(record));
     selectedIndex = 0;
     workspace.classList.remove('hidden');
+    renderMappingSummary();
     renderRecordList();
     renderEditor(marcRecords[selectedIndex]);
     setStatus(`Loaded ${marcRecords.length} record${marcRecords.length === 1 ? '' : 's'} from ${file.name}.`);
   } catch (error) {
     workspace.classList.add('hidden');
-    setStatus(error instanceof Error ? error.message : 'Unable to read the workbook.', true);
+    setStatus(error instanceof Error ? error.message : 'Unable to read the file.', true);
   }
+}
+
+function renderModalSubfields() {
+  addFieldSubfieldsContainer.innerHTML = '';
+
+  const rows = addFieldSubfieldsContainer.dataset.count
+    ? Number(addFieldSubfieldsContainer.dataset.count)
+    : 1;
+
+  for (let index = 0; index < rows; index += 1) {
+    const row = document.createElement('div');
+    row.className = 'subfield-row';
+
+    const codeLabel = document.createElement('label');
+    codeLabel.textContent = 'Code';
+    const codeInput = document.createElement('input');
+    codeInput.type = 'text';
+    codeInput.maxLength = 1;
+    codeInput.value = index === 0 ? 'a' : 'a';
+    codeInput.className = 'modal-subfield-code';
+    codeInput.setAttribute('aria-label', `New subfield code ${index + 1}`);
+    codeLabel.append(codeInput);
+
+    const valueLabel = document.createElement('label');
+    valueLabel.textContent = 'Value';
+    const valueInput = document.createElement('input');
+    valueInput.type = 'text';
+    valueInput.className = 'modal-subfield-value';
+    valueInput.setAttribute('aria-label', `New subfield value ${index + 1}`);
+    valueLabel.append(valueInput);
+
+    row.append(codeLabel, valueLabel, document.createElement('div'));
+    addFieldSubfieldsContainer.append(row);
+  }
+}
+
+function openAddFieldModal() {
+  addFieldForm.reset();
+  addFieldError.classList.add('hidden');
+  addFieldError.textContent = '';
+  addFieldSubfieldsContainer.dataset.count = '1';
+  renderModalSubfields();
+  updateAddFieldFormMode();
+  addFieldModal.classList.remove('hidden');
+  addFieldTagInput.focus();
+}
+
+function closeAddFieldModal() {
+  addFieldModal.classList.add('hidden');
+}
+
+function updateAddFieldFormMode() {
+  const fieldType = /** @type {HTMLInputElement|null} */ (
+    addFieldForm.querySelector('input[name="field-type"]:checked')
+  )?.value;
+
+  const isControl = fieldType === 'control';
+  addFieldDataOptions.classList.toggle('hidden', isControl);
+  addFieldControlValueWrap.classList.toggle('hidden', !isControl);
+}
+
+function readModalSubfields() {
+  const codes = addFieldSubfieldsContainer.querySelectorAll('.modal-subfield-code');
+  const values = addFieldSubfieldsContainer.querySelectorAll('.modal-subfield-value');
+
+  /** @type {{ code: string, value: string }[]} */
+  const subfields = [];
+
+  codes.forEach((codeInput, index) => {
+    const valueInput = values[index];
+    subfields.push({
+      code: codeInput.value.slice(0, 1) || 'a',
+      value: valueInput?.value ?? '',
+    });
+  });
+
+  return subfields;
+}
+
+function handleAddFieldSubmit(event) {
+  event.preventDefault();
+  addFieldError.classList.add('hidden');
+  addFieldError.textContent = '';
+
+  const tag = addFieldTagInput.value.trim();
+  if (!/^\d{3}$/.test(tag)) {
+    addFieldError.textContent = 'Tag must be a 3-digit MARC field number.';
+    addFieldError.classList.remove('hidden');
+    return;
+  }
+
+  const fieldType = /** @type {HTMLInputElement|null} */ (
+    addFieldForm.querySelector('input[name="field-type"]:checked')
+  )?.value;
+
+  const record = marcRecords[selectedIndex];
+
+  if (fieldType === 'control') {
+    record.fields.push(createControlField(tag, addFieldControlValueInput.value));
+  } else {
+    const subfields = readModalSubfields();
+    if (subfields.every((subfield) => subfield.value.trim() === '')) {
+      addFieldError.textContent = 'Add at least one subfield value for a data field.';
+      addFieldError.classList.remove('hidden');
+      return;
+    }
+
+    record.fields.push(
+      createDataField(
+        tag,
+        addFieldInd1Input.value,
+        addFieldInd2Input.value,
+        subfields,
+        `${tag} field`,
+      ),
+    );
+  }
+
+  closeAddFieldModal();
+  renderEditor(record);
 }
 
 dropZone.addEventListener('click', () => fileInput.click());
@@ -401,7 +566,9 @@ fileInput.addEventListener('change', (event) => {
 
 advancedToggle.addEventListener('change', (event) => {
   advancedView = event.target.checked;
-  renderEditor(marcRecords[selectedIndex]);
+  if (marcRecords[selectedIndex]) {
+    renderEditor(marcRecords[selectedIndex]);
+  }
 });
 
 prevRecordButton.addEventListener('click', () => {
@@ -412,22 +579,63 @@ nextRecordButton.addEventListener('click', () => {
   selectRecord(selectedIndex + 1);
 });
 
-addFieldButton.addEventListener('click', () => {
-  const record = marcRecords[selectedIndex];
-  record.fields.push(createEmptyDataField());
-  renderEditor(record);
+addFieldButton.addEventListener('click', openAddFieldModal);
+
+addFieldForm.addEventListener('change', (event) => {
+  if (event.target instanceof HTMLInputElement && event.target.name === 'field-type') {
+    updateAddFieldFormMode();
+  }
+});
+
+addFieldForm.addEventListener('submit', handleAddFieldSubmit);
+
+addModalSubfieldButton.addEventListener('click', () => {
+  const currentCount = addFieldSubfieldsContainer.querySelectorAll('.subfield-row').length;
+  addFieldSubfieldsContainer.dataset.count = String(currentCount + 1);
+
+  const row = document.createElement('div');
+  row.className = 'subfield-row';
+
+  const codeLabel = document.createElement('label');
+  codeLabel.textContent = 'Code';
+  const codeInput = document.createElement('input');
+  codeInput.type = 'text';
+  codeInput.maxLength = 1;
+  codeInput.value = 'a';
+  codeInput.className = 'modal-subfield-code';
+  codeLabel.append(codeInput);
+
+  const valueLabel = document.createElement('label');
+  valueLabel.textContent = 'Value';
+  const valueInput = document.createElement('input');
+  valueInput.type = 'text';
+  valueInput.className = 'modal-subfield-value';
+  valueLabel.append(valueInput);
+
+  row.append(codeLabel, valueLabel, document.createElement('div'));
+  addFieldSubfieldsContainer.append(row);
+});
+
+addFieldModal.querySelectorAll('[data-close-modal]').forEach((element) => {
+  element.addEventListener('click', closeAddFieldModal);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !addFieldModal.classList.contains('hidden')) {
+    closeAddFieldModal();
+  }
 });
 
 exportTextButton.addEventListener('click', () => {
-  downloadTextFile(recordsToMarcText(marcRecords), 'book-donation-records.txt');
+  downloadTextFile(recordsToMarcText(marcRecords), 'marc-records.txt');
 });
 
 exportXmlButton.addEventListener('click', () => {
-  downloadTextFile(recordsToMarcXml(marcRecords), 'book-donation-records.xml', 'application/xml;charset=utf-8');
+  downloadTextFile(recordsToMarcXml(marcRecords), 'marc-records.xml', 'application/xml;charset=utf-8');
 });
 
 exportMrcButton.addEventListener('click', () => {
-  downloadBinaryFile(recordsToMarcBinary(marcRecords), 'book-donation-records.mrc');
+  downloadBinaryFile(recordsToMarcBinary(marcRecords), 'marc-records.mrc');
 });
 
 const sampleLink = document.querySelector('.sample-link');

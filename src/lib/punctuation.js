@@ -1,5 +1,5 @@
 /**
- * Apply trailing punctuation rules from the Book Donation template.
+ * Apply trailing punctuation rules from spreadsheet header hints.
  * @param {string} value
  * @param {string|undefined} rule
  * @returns {string}
