@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "CSV to MARC",
-  "version": "1.0.0",
-  "description": "Convert CSV and Excel files with MARC header mappings into editable MARC21 records",
+  "name": "MARCLite",
+  "version": "2.0.0",
+  "description": "Lightweight MARC21 toolkit for import, edit, validation, cleanup, and export in your browser",
   "permissions": ["storage"],
   "action": {
-    "default_title": "Open CSV to MARC",
+    "default_title": "Open MARCLite",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

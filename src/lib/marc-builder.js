@@ -37,6 +37,7 @@ import { resolveLanguageCode } from './template-mapping.js';
 
 /**
  * @typedef {Object} MarcRecord
+ * @property {'bibliographic'|'authority'|'holdings'} [recordType]
  * @property {string} leader
  * @property {MarcField[]} fields
  * @property {number} sourceRowNumber
@@ -362,6 +363,7 @@ export function buildMarcRecord(rowValues, rowNumber, columnSchema) {
   }
 
   return {
+    recordType: 'bibliographic',
     leader: DEFAULT_LEADER,
     fields,
     sourceRowNumber: rowNumber,

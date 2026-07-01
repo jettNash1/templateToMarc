@@ -93,7 +93,7 @@ export async function parseFile(buffer, filename = '') {
 
   return {
     columnSchema: columns,
-    rows: parsedRows,
+    parsedRows,
     skippedColumns: skipped,
   };
 }
