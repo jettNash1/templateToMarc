@@ -29,26 +29,34 @@
       <button type="button" class="nav-tab" data-tab="cleanup">Cleanup</button>
     </nav>
 
+    <section id="validation-banner" class="validation-banner hidden" aria-live="polite">
+      <button
+        type="button"
+        id="validation-banner-toggle"
+        class="validation-banner-toggle"
+        aria-expanded="false"
+        aria-controls="validation-banner-list"
+      >
+        <span id="validation-banner-summary"></span>
+      </button>
+      <ul id="validation-banner-list" class="validation-banner-list hidden"></ul>
+    </section>
+
     <main class="app-main">
       <section id="tab-convert" class="tab-panel active" aria-labelledby="convert-heading">
-        <div class="import-grid">
-          <section class="panel" aria-labelledby="convert-heading">
-            <h2 id="convert-heading">Import from spreadsheet template</h2>
-            <p class="meta-text">Row 1 headers define MARC mappings; data rows hold plain values.</p>
-            <div id="drop-zone-spreadsheet" class="drop-zone" tabindex="0" role="button">
-              <p>Drop a `.csv`, `.xlsx`, or `.xls` file here, or click to browse.</p>
-              <input id="file-input-spreadsheet" type="file" accept=".csv,.xlsx,.xls" aria-label="Choose spreadsheet file" />
-            </div>
-          </section>
-          <section class="panel" aria-labelledby="marc-import-heading">
-            <h2 id="marc-import-heading">Import MARC file</h2>
-            <p class="meta-text">Open existing `.mrc`, `.mrk`, or MARCXML `.xml` records.</p>
-            <div id="drop-zone-marc" class="drop-zone" tabindex="0" role="button">
-              <p>Drop a MARC file here, or click to browse.</p>
-              <input id="file-input-marc" type="file" accept=".mrc,.mrk,.xml,.txt" aria-label="Choose MARC file" />
-            </div>
-          </section>
-        </div>
+        <section class="panel" aria-labelledby="convert-heading">
+          <h2 id="convert-heading">Import records</h2>
+          <p class="meta-text">Upload a spreadsheet template or an existing MARC file. MARCLite detects the format from the file extension.</p>
+          <div id="drop-zone-import" class="drop-zone" tabindex="0" role="button" aria-labelledby="import-drop-label">
+            <p id="import-drop-label">Drop a file here, or click to browse.</p>
+            <p class="meta-text">Supported: .csv, .xlsx, .xls, .mrc, .mrk, .xml, .txt</p>
+            <input id="file-input-import" type="file" accept=".csv,.xlsx,.xls,.mrc,.mrk,.xml,.txt" aria-label="Choose file to import" />
+          </div>
+          <p class="meta-text">
+            <a class="sample-link" href="BookDonationTemplate.xlsx">Download example spreadsheet</a>
+            · Spreadsheet row 1 uses MARC notation headers; MARC files open directly for editing.
+          </p>
+        </section>
         <p id="upload-status" class="status-message" role="status" aria-live="polite"></p>
         <section id="mapping-summary" class="panel mapping-summary hidden" aria-labelledby="mapping-summary-heading">
           <h3 id="mapping-summary-heading">Column mapping</h3>
@@ -60,7 +68,7 @@
       <section id="tab-edit" class="tab-panel" aria-labelledby="edit-tab-heading">
         <div id="edit-empty" class="panel empty-state">
           <h2 id="edit-tab-heading">Edit records</h2>
-          <p class="meta-text">Import a spreadsheet or MARC file on the Convert tab, or create a blank record below.</p>
+          <p class="meta-text">Import a file on the Convert tab, or create a blank record below.</p>
           <div class="editor-actions">
             <label class="inline-label">
               Record type
@@ -81,6 +89,13 @@
             </div>
             <div class="record-toolbar">
               <button id="duplicate-record" type="button" class="secondary">Duplicate</button>
+              <button id="duplicate-undo" type="button" class="secondary hidden">Undo duplicate</button>
+            </div>
+            <p id="duplicate-status" class="status-message duplicate-status hidden" role="status" aria-live="polite"></p>
+            <div class="record-scope-toolbar">
+              <button id="scope-select-all" type="button" class="secondary">Select all</button>
+              <button id="scope-clear-selection" type="button" class="secondary">Clear selection</button>
+              <span id="scope-selection-badge" class="badge" aria-live="polite">0 selected for batch</span>
             </div>
             <ul id="record-list" class="record-list" role="listbox" aria-label="Loaded records"></ul>
           </aside>
@@ -100,10 +115,6 @@
                 </label>
               </div>
             </div>
-            <section id="validation-panel" class="validation-panel hidden" aria-live="polite">
-              <h3>Validation</h3>
-              <ul id="validation-list"></ul>
-            </section>
             <div id="leader-editor" class="leader-editor"></div>
             <div id="field-editor" class="field-editor"></div>
             <section class="preview-panel" aria-labelledby="preview-heading">
@@ -147,13 +158,25 @@
           <h2 id="batch-heading">Batch editing</h2>
           <p class="meta-text">Apply find/replace across leaders, control fields, indicators, subfield codes, and values.</p>
           <form id="batch-form" class="batch-form">
+            <fieldset class="record-scope-fieldset" data-scope-panel="batch">
+              <legend>Record scope</legend>
+              <div class="record-scope-modes">
+                <label class="radio-label"><input type="radio" name="batch-record-scope-mode" value="all" />All records</label>
+                <label class="radio-label"><input type="radio" name="batch-record-scope-mode" value="custom" checked />Custom scope</label>
+                <label class="radio-label"><input type="radio" name="batch-record-scope-mode" value="current" />Current record only</label>
+              </div>
+              <div class="record-scope-custom-row">
+                <label>Records<input id="batch-scope-text" class="scope-text-input" type="text" placeholder="e.g. 1-75 or 1, 6, 17" aria-label="Custom record scope for batch" /></label>
+                <button type="button" id="batch-scope-apply" class="secondary">Apply scope</button>
+              </div>
+            </fieldset>
             <div class="field-grid">
               <label>Find<input id="batch-find" type="text" aria-label="Find text" /></label>
               <label>Replace<input id="batch-replace" type="text" aria-label="Replace text" /></label>
               <label>Tag filter<input id="batch-tag" type="text" maxlength="3" placeholder="650" aria-label="Optional tag filter" /></label>
               <label>Subfield<input id="batch-subfield" type="text" maxlength="1" placeholder="a" aria-label="Optional subfield filter" /></label>
             </div>
-            <label class="toggle"><input id="batch-regex" type="checkbox" />Use regular expression</label>
+            <p class="meta-text">Find text is matched literally by default. Patterns like <code>\d+</code>, <code>[A-Z]+</code>, or <code>/pattern/</code> are treated as regular expressions automatically.</p>
             <fieldset class="batch-targets">
               <legend>Update targets</legend>
               <label class="toggle"><input type="checkbox" id="batch-target-leader" checked />Leader</label>
@@ -193,10 +216,17 @@
             <label class="toggle"><input type="checkbox" id="cleanup-isbn" checked />Normalize ISBNs</label>
             <label class="toggle"><input type="checkbox" id="cleanup-dates" checked />Normalize dates</label>
           </div>
-          <fieldset class="cleanup-scope">
-            <legend>Apply to</legend>
-            <label class="radio-label"><input type="radio" name="cleanup-scope" value="selected" checked />Selected record</label>
-            <label class="radio-label"><input type="radio" name="cleanup-scope" value="all" />All records</label>
+          <fieldset class="record-scope-fieldset" data-scope-panel="cleanup">
+            <legend>Record scope</legend>
+            <div class="record-scope-modes">
+              <label class="radio-label"><input type="radio" name="cleanup-record-scope-mode" value="all" />All records</label>
+              <label class="radio-label"><input type="radio" name="cleanup-record-scope-mode" value="custom" checked />Custom scope</label>
+              <label class="radio-label"><input type="radio" name="cleanup-record-scope-mode" value="current" />Current record only</label>
+            </div>
+            <div class="record-scope-custom-row">
+              <label>Records<input id="cleanup-scope-text" class="scope-text-input" type="text" placeholder="e.g. 1-75 or 1, 6, 17" aria-label="Custom record scope for cleanup" /></label>
+              <button type="button" id="cleanup-scope-apply" class="secondary">Apply scope</button>
+            </div>
           </fieldset>
           <button id="preview-cleanup" type="button">Preview cleanup</button>
           <button id="run-cleanup" type="button">Apply cleanup</button>

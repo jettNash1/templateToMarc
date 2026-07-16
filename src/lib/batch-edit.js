@@ -16,10 +16,10 @@ import { cleanupRecord } from './marc-cleanup.js';
  * @typedef {Object} BatchReplaceOptions
  * @property {string} find
  * @property {string} replace
- * @property {boolean} useRegex
  * @property {string} [tagFilter]
  * @property {string} [subfieldFilter]
  * @property {BatchReplaceTargets} targets
+ * @property {number[]} [indices]
  */
 
 /** @type {BatchReplaceTargets} */
@@ -33,19 +33,73 @@ export const DEFAULT_BATCH_TARGETS = {
 };
 
 /**
+ * @param {string} find
+ * @returns {boolean}
+ */
+function looksLikeRegex(find) {
+  if (/^\/[\s\S]+\/[gimsuy]*$/.test(find)) {
+    return true;
+  }
+
+  const signals = [
+    /\\[dDsSwWbBnrt0-9xuU]/,
+    /(?:^|[^\\])\[[^\]]+\]/,
+    /(?:^|[^\\])\|/,
+    /(?:\]|\)|\.|})\{[0-9,]+\}/,
+    /(?:\]|\)|\.|\\[dDsSwW]|[^\\+*?])[+*?]/,
+    /^\^/,
+    /(?<!\\)\$$/,
+  ];
+
+  return signals.some((pattern) => pattern.test(find));
+}
+
+/**
+ * @param {string} find
+ * @returns {{ pattern: string, flags: string, useRegex: boolean }}
+ */
+function parseFindPattern(find) {
+  if (!find) {
+    return { pattern: find, flags: 'g', useRegex: false };
+  }
+
+  const slashWrapped = find.match(/^\/([\s\S]+)\/([gimsuy]*)$/);
+  if (slashWrapped) {
+    const flags = slashWrapped[2].includes('g') ? slashWrapped[2] : `${slashWrapped[2]}g`;
+    return { pattern: slashWrapped[1], flags, useRegex: true };
+  }
+
+  if (!looksLikeRegex(find)) {
+    return { pattern: find, flags: 'g', useRegex: false };
+  }
+
+  try {
+    new RegExp(find);
+    return { pattern: find, flags: 'g', useRegex: true };
+  } catch {
+    return { pattern: find, flags: 'g', useRegex: false };
+  }
+}
+
+/**
  * @param {string} value
  * @param {string} find
  * @param {string} replace
- * @param {boolean} useRegex
  * @returns {string}
  */
-function replaceString(value, find, replace, useRegex) {
+function replaceString(value, find, replace) {
   if (!find) {
     return value;
   }
 
+  const { pattern, flags, useRegex } = parseFindPattern(find);
+
   if (useRegex) {
-    return value.replace(new RegExp(find, 'g'), replace);
+    try {
+      return value.replace(new RegExp(pattern, flags), replace);
+    } catch {
+      return value.split(find).join(replace);
+    }
   }
 
   return value.split(find).join(replace);
@@ -64,11 +118,23 @@ function tagMatches(tag, tagFilter) {
 }
 
 /**
- * @param {MarcRecord[]} records
- * @param {BatchReplaceOptions} options
- * @returns {MarcRecord[]}
+ * @param {number} recordIndex
+ * @param {number[]|undefined} indices
+ * @returns {boolean}
  */
-export function batchFindReplace(records, options) {
+function isInScope(recordIndex, indices) {
+  if (!indices || indices.length === 0) {
+    return true;
+  }
+  return indices.includes(recordIndex);
+}
+
+/**
+ * @param {MarcRecord} record
+ * @param {BatchReplaceOptions} options
+ * @returns {MarcRecord}
+ */
+function transformRecordFindReplace(record, options) {
   const targets = { ...DEFAULT_BATCH_TARGETS, ...options.targets };
   const tagFilter = options.tagFilter?.trim()
     ? options.tagFilter.padStart(3, '0').slice(-3)
@@ -77,88 +143,100 @@ export function batchFindReplace(records, options) {
   const hasSubfieldFilter = Boolean(subfieldFilter);
   const hasTagFilter = Boolean(tagFilter);
 
-  return records.map((record) => {
-    let leader = record.leader;
+  let leader = record.leader;
 
-    if (targets.leader && !hasTagFilter && !hasSubfieldFilter) {
-      leader = replaceString(leader, options.find, options.replace, options.useRegex);
-    }
+  if (targets.leader && !hasTagFilter && !hasSubfieldFilter) {
+    leader = replaceString(leader, options.find, options.replace);
+  }
 
-    const fields = record.fields.map((field) => {
-      if (field.type === 'control') {
-        if (!tagMatches(field.tag, tagFilter)) {
-          return field;
-        }
-
-        if (hasSubfieldFilter) {
-          return field;
-        }
-
-        let tag = field.tag;
-        let value = field.value;
-
-        if (targets.controlTags) {
-          tag = replaceString(tag, options.find, options.replace, options.useRegex);
-        }
-
-        if (targets.controlValues) {
-          value = replaceString(value, options.find, options.replace, options.useRegex);
-        }
-
-        if (tag === field.tag && value === field.value) {
-          return field;
-        }
-
-        return { ...field, tag, value };
-      }
-
+  const fields = record.fields.map((field) => {
+    if (field.type === 'control') {
       if (!tagMatches(field.tag, tagFilter)) {
         return field;
       }
 
-      let ind1 = field.ind1;
-      let ind2 = field.ind2;
-
-      if (targets.indicators && !hasSubfieldFilter) {
-        ind1 = replaceString(ind1, options.find, options.replace, options.useRegex);
-        ind2 = replaceString(ind2, options.find, options.replace, options.useRegex);
-      }
-
-      const subfields = field.subfields.map((subfield) => {
-        if (subfieldFilter && subfield.code !== subfieldFilter) {
-          return subfield;
-        }
-
-        let code = subfield.code;
-        let value = subfield.value;
-
-        if (targets.subfieldCodes) {
-          code = replaceString(code, options.find, options.replace, options.useRegex).slice(0, 1) || ' ';
-        }
-
-        if (targets.subfieldValues) {
-          value = replaceString(value, options.find, options.replace, options.useRegex);
-        }
-
-        if (code === subfield.code && value === subfield.value) {
-          return subfield;
-        }
-
-        return { ...subfield, code, value };
-      });
-
-      if (ind1 === field.ind1 && ind2 === field.ind2 && subfields.every((subfield, index) => subfield === field.subfields[index])) {
+      if (hasSubfieldFilter) {
         return field;
       }
 
-      return { ...field, ind1, ind2, subfields };
-    });
+      let tag = field.tag;
+      let value = field.value;
 
-    if (leader === record.leader && fields.every((field, index) => field === record.fields[index])) {
-      return record;
+      if (targets.controlTags) {
+        tag = replaceString(tag, options.find, options.replace);
+      }
+
+      if (targets.controlValues) {
+        value = replaceString(value, options.find, options.replace);
+      }
+
+      if (tag === field.tag && value === field.value) {
+        return field;
+      }
+
+      return { ...field, tag, value };
     }
 
-    return { ...record, leader, fields };
+    if (!tagMatches(field.tag, tagFilter)) {
+      return field;
+    }
+
+    let ind1 = field.ind1;
+    let ind2 = field.ind2;
+
+    if (targets.indicators && !hasSubfieldFilter) {
+      ind1 = replaceString(ind1, options.find, options.replace);
+      ind2 = replaceString(ind2, options.find, options.replace);
+    }
+
+    const subfields = field.subfields.map((subfield) => {
+      if (subfieldFilter && subfield.code !== subfieldFilter) {
+        return subfield;
+      }
+
+      let code = subfield.code;
+      let value = subfield.value;
+
+      if (targets.subfieldCodes) {
+        code = replaceString(code, options.find, options.replace).slice(0, 1) || ' ';
+      }
+
+      if (targets.subfieldValues) {
+        value = replaceString(value, options.find, options.replace);
+      }
+
+      if (code === subfield.code && value === subfield.value) {
+        return subfield;
+      }
+
+      return { ...subfield, code, value };
+    });
+
+    if (ind1 === field.ind1 && ind2 === field.ind2 && subfields.every((subfield, index) => subfield === field.subfields[index])) {
+      return field;
+    }
+
+    return { ...field, ind1, ind2, subfields };
+  });
+
+  if (leader === record.leader && fields.every((field, index) => field === record.fields[index])) {
+    return record;
+  }
+
+  return { ...record, leader, fields };
+}
+
+/**
+ * @param {MarcRecord[]} records
+ * @param {BatchReplaceOptions} options
+ * @returns {MarcRecord[]}
+ */
+export function batchFindReplace(records, options) {
+  return records.map((record, recordIndex) => {
+    if (!isInScope(recordIndex, options.indices)) {
+      return record;
+    }
+    return transformRecordFindReplace(record, options);
   });
 }
 
@@ -167,10 +245,15 @@ export function batchFindReplace(records, options) {
  * @param {string} tag
  * @param {string} subfieldCode
  * @param {string} value
+ * @param {number[]} [indices]
  * @returns {MarcRecord[]}
  */
-export function batchAddSubfield(records, tag, subfieldCode, value) {
-  return records.map((record) => {
+export function batchAddSubfield(records, tag, subfieldCode, value, indices) {
+  return records.map((record, recordIndex) => {
+    if (!isInScope(recordIndex, indices)) {
+      return record;
+    }
+
     const fields = record.fields.map((field) => {
       if (field.type !== 'data' || field.tag !== tag) {
         return field;
@@ -194,13 +277,20 @@ export function batchAddSubfield(records, tag, subfieldCode, value) {
 /**
  * @param {MarcRecord[]} records
  * @param {string} tag
+ * @param {number[]} [indices]
  * @returns {MarcRecord[]}
  */
-export function batchDeleteTag(records, tag) {
-  return records.map((record) => ({
-    ...record,
-    fields: record.fields.filter((field) => field.tag !== tag),
-  }));
+export function batchDeleteTag(records, tag, indices) {
+  return records.map((record, recordIndex) => {
+    if (!isInScope(recordIndex, indices)) {
+      return record;
+    }
+
+    return {
+      ...record,
+      fields: record.fields.filter((field) => field.tag !== tag),
+    };
+  });
 }
 
 /**
@@ -230,8 +320,14 @@ export async function batchProcessRecords(records, mapper, chunkSize = 100, onPr
 
 /**
  * @param {MarcRecord[]} records
+ * @param {number[]} [indices]
  * @returns {MarcRecord[]}
  */
-export function batchNormalize(records) {
-  return records.map((record) => cleanupRecord(record));
+export function batchNormalize(records, indices) {
+  return records.map((record, recordIndex) => {
+    if (!isInScope(recordIndex, indices)) {
+      return record;
+    }
+    return cleanupRecord(record);
+  });
 }
