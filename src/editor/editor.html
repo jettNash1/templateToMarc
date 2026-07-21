@@ -66,9 +66,8 @@
       </section>
 
       <section id="tab-edit" class="tab-panel" aria-labelledby="edit-tab-heading">
-        <div id="edit-empty" class="panel empty-state">
-          <h2 id="edit-tab-heading">Edit records</h2>
-          <p class="meta-text">Import a file on the Convert tab, or create a blank record below.</p>
+        <div class="edit-tab-toolbar panel">
+          <h2 id="edit-tab-heading" class="edit-tab-heading">Edit records</h2>
           <div class="editor-actions">
             <label class="inline-label">
               Record type
@@ -81,15 +80,30 @@
             <button id="new-record" type="button">New blank record</button>
           </div>
         </div>
+        <div id="edit-empty" class="panel empty-state">
+          <p class="meta-text">Import a file on the Convert tab, or create a blank record above.</p>
+        </div>
         <div id="workspace" class="workspace hidden">
           <aside class="panel record-list-panel" aria-labelledby="records-heading">
             <div class="panel-header">
               <h2 id="records-heading">Records</h2>
               <span id="record-count" class="badge"></span>
             </div>
+            <div class="record-filter-toolbar">
+              <label class="inline-label">
+                Filter
+                <select id="record-type-filter" aria-label="Filter records by type">
+                  <option value="all">All types</option>
+                  <option value="bibliographic">Bibliographic</option>
+                  <option value="authority">Authority</option>
+                  <option value="holdings">Holdings</option>
+                </select>
+              </label>
+            </div>
             <div class="record-toolbar">
               <button id="duplicate-record" type="button" class="secondary">Duplicate</button>
               <button id="duplicate-undo" type="button" class="secondary hidden">Undo duplicate</button>
+              <button id="delete-records" type="button" class="secondary danger">Delete</button>
             </div>
             <p id="duplicate-status" class="status-message duplicate-status hidden" role="status" aria-live="polite"></p>
             <div class="record-scope-toolbar">
@@ -261,13 +275,28 @@
             <div id="add-field-subfields" class="subfield-list"></div>
             <button id="add-modal-subfield" type="button" class="secondary">Add subfield</button>
           </div>
-          <label id="add-field-control-value-wrap" class="modal-label hidden">Value<input id="add-field-control-value" type="text" /></label>
+          <div id="add-field-control-options" class="hidden">
+            <label class="modal-label">Value<input id="add-field-control-value" type="text" aria-label="Control field value" /></label>
+          </div>
           <p id="add-field-error" class="status-message error hidden" role="alert"></p>
           <div class="modal-actions">
             <button type="button" class="secondary" data-close-modal>Cancel</button>
             <button type="submit">Add field</button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <div id="delete-records-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="delete-records-title">
+      <div class="modal-backdrop" data-close-delete-modal tabindex="-1" aria-hidden="true"></div>
+      <div class="modal-card">
+        <h2 id="delete-records-title">Delete records</h2>
+        <p id="delete-records-message" class="meta-text"></p>
+        <p class="meta-text">This action cannot be undone.</p>
+        <div class="modal-actions">
+          <button type="button" class="secondary" data-close-delete-modal>Cancel</button>
+          <button type="button" id="confirm-delete-records" class="danger">Delete</button>
+        </div>
       </div>
     </div>
 

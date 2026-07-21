@@ -40,6 +40,9 @@ import { parseRecordScope, formatRecordRanges, allRecordIndices } from '../lib/r
 const state = getState();
 let advancedView = false;
 
+/** @type {'all'|'bibliographic'|'authority'|'holdings'} */
+let recordListFilter = 'all';
+
 /**
  * @typedef {{ snapshots: Map<number, MarcRecord>, summaries: import('../lib/marc-diff.js').RecordChangeSummary[] }} UndoState
  */
@@ -88,10 +91,15 @@ const addFieldTagInput = document.getElementById('add-field-tag');
 const addFieldInd1Input = document.getElementById('add-field-ind1');
 const addFieldInd2Input = document.getElementById('add-field-ind2');
 const addFieldDataOptions = document.getElementById('add-field-data-options');
-const addFieldControlValueWrap = document.getElementById('add-field-control-value-wrap');
+const addFieldControlOptions = document.getElementById('add-field-control-options');
 const addFieldControlValueInput = document.getElementById('add-field-control-value');
 const addFieldSubfieldsContainer = document.getElementById('add-field-subfields');
 const addFieldError = document.getElementById('add-field-error');
+const deleteRecordsModal = document.getElementById('delete-records-modal');
+const deleteRecordsMessage = document.getElementById('delete-records-message');
+
+/** @type {number[]|null} */
+let pendingDeleteIndices = null;
 
 function switchTab(tabId) {
   navTabs.forEach((tab) => {
@@ -192,16 +200,81 @@ async function refreshExportPreview() {
   }
 }
 
+function getRecordType(record) {
+  return record.recordType ?? 'bibliographic';
+}
+
+/**
+ * @returns {number[]}
+ */
+function getFilteredRecordIndices() {
+  if (recordListFilter === 'all') {
+    return state.marcRecords.map((_, index) => index);
+  }
+
+  return state.marcRecords.reduce((indices, record, index) => {
+    if (getRecordType(record) === recordListFilter) {
+      indices.push(index);
+    }
+    return indices;
+  }, []);
+}
+
+/**
+ * @returns {import('../lib/marc-validate.js').ValidationIssue[]}
+ */
+function getVisibleValidationIssues() {
+  if (recordListFilter === 'all') {
+    return allValidationIssues;
+  }
+
+  const visibleIndices = new Set(getFilteredRecordIndices());
+  return allValidationIssues.filter((issue) => visibleIndices.has(issue.recordIndex ?? -1));
+}
+
+function getRecordListFilterLabel() {
+  if (recordListFilter === 'all') {
+    return '';
+  }
+
+  return recordListFilter.charAt(0).toUpperCase() + recordListFilter.slice(1);
+}
+
+function updateRecordCountBadge() {
+  const total = state.marcRecords.length;
+  const visible = getFilteredRecordIndices();
+
+  if (recordListFilter === 'all' || visible.length === total) {
+    recordCount.textContent = `${total} record${total === 1 ? '' : 's'}`;
+    return;
+  }
+
+  recordCount.textContent = `${visible.length} of ${total}`;
+}
+
 function renderRecordList() {
   recordList.innerHTML = '';
-  recordCount.textContent = `${state.marcRecords.length} record${state.marcRecords.length === 1 ? '' : 's'}`;
+  updateRecordCountBadge();
   const scopedIndices = state.scopedRecordIndices;
+  const filteredIndices = getFilteredRecordIndices();
 
-  state.marcRecords.forEach((record, index) => {
+  if (filteredIndices.length === 0) {
+    const emptyItem = document.createElement('li');
+    emptyItem.className = 'record-list-empty';
+    const typeLabel = recordListFilter === 'all' ? '' : ` ${recordListFilter}`;
+    emptyItem.textContent = `No${typeLabel} records match this filter.`;
+    recordList.append(emptyItem);
+    updateScopeSelectionBadge();
+    return;
+  }
+
+  filteredIndices.forEach((index) => {
+    const record = state.marcRecords[index];
     const row = state.parsedRows[index] ?? recordToParsedRow(record);
     const preview = getRecordPreview(record);
     const item = document.createElement('li');
     item.className = 'record-item';
+    item.dataset.recordIndex = String(index);
     item.setAttribute('role', 'option');
     item.setAttribute('aria-selected', String(index === state.selectedIndex));
     item.tabIndex = 0;
@@ -277,6 +350,46 @@ function selectRecord(index) {
   }
   renderRecordList();
   renderEditor(state.marcRecords[index]);
+}
+
+/**
+ * @param {1|-1} direction
+ */
+function selectRelativeRecord(direction) {
+  const visibleIndices = getFilteredRecordIndices();
+  if (visibleIndices.length === 0) {
+    return;
+  }
+
+  const currentPosition = visibleIndices.indexOf(state.selectedIndex);
+  if (currentPosition === -1) {
+    selectRecord(direction === 1 ? visibleIndices[0] : visibleIndices[visibleIndices.length - 1]);
+    return;
+  }
+
+  const nextPosition = currentPosition + direction;
+  if (nextPosition >= 0 && nextPosition < visibleIndices.length) {
+    selectRecord(visibleIndices[nextPosition]);
+  }
+}
+
+function handleRecordListFilterChange() {
+  const filterSelect = document.getElementById('record-type-filter');
+  if (!(filterSelect instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  recordListFilter = filterSelect.value;
+  const visibleIndices = getFilteredRecordIndices();
+
+  if (visibleIndices.length > 0 && !visibleIndices.includes(state.selectedIndex)) {
+    selectRecord(visibleIndices[0]);
+    renderValidationBanner();
+    return;
+  }
+
+  renderRecordList();
+  renderValidationBanner();
 }
 
 function getFieldGroup(field) {
@@ -381,6 +494,110 @@ function getRecordActionIndices() {
   }
 
   return hasRecords() ? [state.selectedIndex] : [];
+}
+
+/**
+ * @returns {number[]}
+ */
+function getRecordsToDelete() {
+  if (state.scopedRecordIndices.size > 0) {
+    return [...state.scopedRecordIndices].sort((a, b) => a - b);
+  }
+
+  return hasRecords() ? [state.selectedIndex] : [];
+}
+
+/**
+ * @param {number[]} indices
+ * @returns {string}
+ */
+function getDeleteConfirmMessage(indices) {
+  if (indices.length === 1) {
+    const record = state.marcRecords[indices[0]];
+    const row = state.parsedRows[indices[0]] ?? recordToParsedRow(record);
+    const preview = getRecordPreview(record);
+    const title = row.previewTitle ?? preview.title ?? 'Untitled';
+    return `Delete record ${indices[0] + 1} (“${title}”)?`;
+  }
+
+  return `Delete ${indices.length} selected records (Records ${formatRecordRanges(indices)})?`;
+}
+
+/**
+ * @param {number[]} deletedIndices
+ * @param {number} previousSelectedIndex
+ * @returns {number}
+ */
+function computeSelectedIndexAfterDelete(deletedIndices, previousSelectedIndex) {
+  const remainingCount = state.marcRecords.length;
+  if (remainingCount === 0) {
+    return 0;
+  }
+
+  const deletedSet = new Set(deletedIndices);
+  const deletedBefore = deletedIndices.filter((index) => index < previousSelectedIndex).length;
+
+  if (!deletedSet.has(previousSelectedIndex)) {
+    return previousSelectedIndex - deletedBefore;
+  }
+
+  const candidate = previousSelectedIndex - deletedBefore;
+  return Math.max(0, Math.min(candidate, remainingCount - 1));
+}
+
+/**
+ * @param {number[]} indices
+ */
+function deleteRecordsAtIndices(indices) {
+  const previousSelectedIndex = state.selectedIndex;
+
+  [...indices].sort((a, b) => b - a).forEach((index) => {
+    state.marcRecords.splice(index, 1);
+    state.parsedRows.splice(index, 1);
+  });
+
+  clearScope();
+  clearDuplicateUndo();
+  batchUndoState = null;
+  cleanupUndoState = null;
+  document.getElementById('batch-undo-all')?.classList.add('hidden');
+  document.getElementById('cleanup-undo-all')?.classList.add('hidden');
+
+  if (state.marcRecords.length === 0) {
+    patchState({ selectedIndex: 0 });
+    refreshEditView();
+    return;
+  }
+
+  patchState({
+    selectedIndex: computeSelectedIndexAfterDelete(indices, previousSelectedIndex),
+  });
+  refreshEditView();
+}
+
+function openDeleteRecordsModal(indices) {
+  if (!deleteRecordsModal || !deleteRecordsMessage) {
+    return;
+  }
+
+  pendingDeleteIndices = indices;
+  deleteRecordsMessage.textContent = getDeleteConfirmMessage(indices);
+  deleteRecordsModal.classList.remove('hidden');
+  document.getElementById('confirm-delete-records')?.focus();
+}
+
+function closeDeleteRecordsModal() {
+  pendingDeleteIndices = null;
+  deleteRecordsModal?.classList.add('hidden');
+}
+
+function requestDeleteRecords() {
+  const indices = getRecordsToDelete();
+  if (indices.length === 0) {
+    return;
+  }
+
+  openDeleteRecordsModal(indices);
 }
 
 function setDuplicateStatus(message) {
@@ -647,7 +864,10 @@ function navigateToIssue(issue) {
 }
 
 function renderValidationBanner() {
-  const { errors, warnings, recordsWithErrors } = summarizeValidation(allValidationIssues);
+  const visibleIssues = getVisibleValidationIssues();
+  const { errors, warnings, recordsWithErrors } = summarizeValidation(visibleIssues);
+  const filterLabel = getRecordListFilterLabel();
+  const filterSuffix = filterLabel ? ` (${filterLabel} records only)` : '';
 
   if (errors === 0 && warnings === 0) {
     validationBanner.classList.add('hidden');
@@ -660,14 +880,14 @@ function renderValidationBanner() {
   validationBanner.classList.toggle('validation-banner-warnings-only', errors === 0);
 
   if (errors > 0) {
-    validationBannerSummary.textContent = `${errors} validation error${errors === 1 ? '' : 's'} in ${recordsWithErrors} record${recordsWithErrors === 1 ? '' : 's'}${warnings > 0 ? ` (${warnings} warning${warnings === 1 ? '' : 's'})` : ''} — select to view details`;
+    validationBannerSummary.textContent = `${errors} validation error${errors === 1 ? '' : 's'} in ${recordsWithErrors} record${recordsWithErrors === 1 ? '' : 's'}${filterSuffix}${warnings > 0 ? ` (${warnings} warning${warnings === 1 ? '' : 's'})` : ''} — select to view details`;
   } else {
-    validationBannerSummary.textContent = `${warnings} validation warning${warnings === 1 ? '' : 's'} — select to view details`;
+    validationBannerSummary.textContent = `${warnings} validation warning${warnings === 1 ? '' : 's'}${filterSuffix} — select to view details`;
   }
 
   validationBannerList.innerHTML = '';
 
-  const { groups, individuals } = groupValidationIssues(allValidationIssues);
+  const { groups, individuals } = groupValidationIssues(visibleIssues);
 
   groups.forEach((group) => {
     const details = document.createElement('details');
@@ -806,7 +1026,12 @@ function refreshValidationUI() {
 }
 
 function renderRecordListValidationBadges() {
-  recordList.querySelectorAll('.record-item').forEach((item, index) => {
+  recordList.querySelectorAll('.record-item').forEach((item) => {
+    const index = Number(item.dataset.recordIndex);
+    if (Number.isNaN(index)) {
+      return;
+    }
+
     const recordIssues = getRecordIssues(allValidationIssues, index);
     const errorCount = recordIssues.filter((issue) => issue.level === 'error').length;
     const warningCount = recordIssues.filter((issue) => issue.level === 'warning').length;
@@ -1461,8 +1686,26 @@ document.getElementById('duplicate-record').addEventListener('click', () => {
 
 document.getElementById('duplicate-undo').addEventListener('click', undoDuplicate);
 
-document.getElementById('prev-record').addEventListener('click', () => selectRecord(state.selectedIndex - 1));
-document.getElementById('next-record').addEventListener('click', () => selectRecord(state.selectedIndex + 1));
+document.getElementById('delete-records').addEventListener('click', requestDeleteRecords);
+
+document.getElementById('confirm-delete-records')?.addEventListener('click', () => {
+  if (!pendingDeleteIndices || pendingDeleteIndices.length === 0) {
+    closeDeleteRecordsModal();
+    return;
+  }
+
+  deleteRecordsAtIndices(pendingDeleteIndices);
+  closeDeleteRecordsModal();
+});
+
+deleteRecordsModal?.querySelectorAll('[data-close-delete-modal]').forEach((element) => {
+  element.addEventListener('click', closeDeleteRecordsModal);
+});
+
+document.getElementById('prev-record').addEventListener('click', () => selectRelativeRecord(-1));
+document.getElementById('next-record').addEventListener('click', () => selectRelativeRecord(1));
+
+document.getElementById('record-type-filter')?.addEventListener('change', handleRecordListFilterChange);
 
 advancedToggle.addEventListener('change', (event) => {
   advancedView = event.target.checked;
@@ -1647,12 +1890,18 @@ function renderModalSubfields() {
   addFieldSubfieldsContainer.append(row);
 }
 
+function syncAddFieldModalFieldType() {
+  const fieldType = addFieldForm.querySelector('input[name="field-type"]:checked')?.value ?? 'data';
+  const isControl = fieldType === 'control';
+  addFieldDataOptions.classList.toggle('hidden', isControl);
+  addFieldControlOptions.classList.toggle('hidden', !isControl);
+}
+
 function openAddFieldModal() {
   addFieldForm.reset();
   addFieldError.classList.add('hidden');
   renderModalSubfields();
-  addFieldDataOptions.classList.remove('hidden');
-  addFieldControlValueWrap.classList.add('hidden');
+  syncAddFieldModalFieldType();
   addFieldModal.classList.remove('hidden');
   addFieldTagInput.focus();
 }
@@ -1664,9 +1913,7 @@ function closeAddFieldModal() {
 document.getElementById('add-field').addEventListener('click', openAddFieldModal);
 addFieldForm.addEventListener('change', (event) => {
   if (event.target instanceof HTMLInputElement && event.target.name === 'field-type') {
-    const isControl = event.target.value === 'control';
-    addFieldDataOptions.classList.toggle('hidden', isControl);
-    addFieldControlValueWrap.classList.toggle('hidden', !isControl);
+    syncAddFieldModalFieldType();
   }
 });
 
@@ -1714,14 +1961,28 @@ addFieldModal.querySelectorAll('[data-close-modal]').forEach((element) => {
 });
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !addFieldModal.classList.contains('hidden')) closeAddFieldModal();
+  if (event.key !== 'Escape') {
+    return;
+  }
+
+  if (!addFieldModal.classList.contains('hidden')) {
+    closeAddFieldModal();
+    return;
+  }
+
+  if (!deleteRecordsModal?.classList.contains('hidden')) {
+    closeDeleteRecordsModal();
+  }
 });
 
 document.getElementById('scope-select-all')?.addEventListener('click', () => {
   if (!hasRecords()) {
     return;
   }
-  setRecordScopeMode('all');
+
+  const indices = getFilteredRecordIndices();
+  setScopedIndices(indices);
+  setRecordScopeMode(indices.length === state.marcRecords.length ? 'all' : 'custom');
   syncScopeFieldsets();
 });
 

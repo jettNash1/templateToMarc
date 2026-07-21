@@ -14,6 +14,7 @@
 - Grouped field editor with advanced MARC view
 - Create **blank bibliographic, authority, or holdings** records
 - **Duplicate** records — duplicates scoped/selected records when checkboxes are set; otherwise duplicates the open record. Multiple or explicitly selected duplicates ask for confirmation; **Undo duplicate** removes the last copy operation.
+- **Delete** records — removes checkbox-selected records, or the open record if none are selected; confirmation modal before deletion
 - Add control or data fields via dialog
 - Live MARC21 preview
 - **Continuous validation** across all loaded records (import, create, and edit)
@@ -22,6 +23,7 @@
 - **Field highlighting** — invalid leader, fields, and subfields outlined in red (warnings in amber)
 - Click any issue in the banner to jump to that record and field
 - Record list badges show error/warning counts per record
+- **Record type filter** — show all, bibliographic, authority, or holdings records in the list; validation banner counts and issues update to match the filtered set
 - **Export preview** — live sample of the selected export format before download
 
 ### Cleanup

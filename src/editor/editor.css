@@ -564,6 +564,45 @@ input[type='radio'] {
   text-align: center;
 }
 
+.edit-tab-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.edit-tab-heading {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.edit-tab-toolbar .editor-actions {
+  margin-left: auto;
+}
+
+.record-filter-toolbar {
+  margin-bottom: 0.75rem;
+}
+
+.record-filter-toolbar .inline-label {
+  width: 100%;
+}
+
+.record-filter-toolbar select {
+  width: 100%;
+}
+
+.record-list-empty {
+  padding: 1rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+}
+
 .record-toolbar {
   display: flex;
   flex-wrap: wrap;
