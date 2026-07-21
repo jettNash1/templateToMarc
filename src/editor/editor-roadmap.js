@@ -557,10 +557,15 @@ export function initRoadmapFeatures(ctx) {
     const presets = await loadBatchPresets();
     presets.push({
       name: name.trim(),
+      operation: document.querySelector('input[name="batch-operation"]:checked')?.value ?? 'find-replace',
+      fieldPart: document.getElementById('batch-set-part')?.value ?? 'indicators',
       find: document.getElementById('batch-find')?.value ?? '',
       replace: document.getElementById('batch-replace')?.value ?? '',
+      setValue: document.getElementById('batch-set-value')?.value ?? '',
       tagFilter: document.getElementById('batch-tag')?.value ?? '',
       subfieldFilter: document.getElementById('batch-subfield')?.value ?? '',
+      setTag: document.getElementById('batch-set-tag')?.value ?? '',
+      setSubfield: document.getElementById('batch-set-subfield')?.value ?? '',
       targets: '',
       scopeMode: state.recordScopeMode,
       scopeText: document.getElementById('batch-scope-text')?.value ?? '',
@@ -584,6 +589,27 @@ export function initRoadmapFeatures(ctx) {
     document.getElementById('batch-replace').value = preset.replace;
     document.getElementById('batch-tag').value = preset.tagFilter;
     document.getElementById('batch-subfield').value = preset.subfieldFilter;
+    const setTagInput = document.getElementById('batch-set-tag');
+    const setSubfieldInput = document.getElementById('batch-set-subfield');
+    const setValueInput = document.getElementById('batch-set-value');
+    if (setTagInput instanceof HTMLInputElement) {
+      setTagInput.value = preset.setTag ?? preset.tagFilter ?? '';
+    }
+    if (setSubfieldInput instanceof HTMLInputElement) {
+      setSubfieldInput.value = preset.setSubfield ?? preset.subfieldFilter ?? '';
+    }
+    if (setValueInput instanceof HTMLInputElement) {
+      setValueInput.value = preset.setValue ?? preset.replace ?? '';
+    }
+    const operationInput = document.querySelector(`input[name="batch-operation"][value="${preset.operation ?? 'find-replace'}"]`);
+    if (operationInput instanceof HTMLInputElement) {
+      operationInput.checked = true;
+    }
+    const setPartSelect = document.getElementById('batch-set-part');
+    if (setPartSelect instanceof HTMLSelectElement && preset.fieldPart) {
+      setPartSelect.value = preset.fieldPart;
+    }
+    document.dispatchEvent(new Event('batch-operation-sync'));
     document.getElementById('batch-scope-text').value = preset.scopeText;
     patchState({ scopeRecordTypeFilter: preset.recordTypeFilter });
   });

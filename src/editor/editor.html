@@ -43,6 +43,13 @@
       >
         <span id="validation-banner-summary"></span>
       </button>
+      <div id="validation-banner-controls" class="validation-banner-controls hidden">
+        <label class="toggle validation-show-dismissed-label">
+          <input type="checkbox" id="validation-show-dismissed" aria-describedby="validation-show-dismissed-hint" />
+          Show dismissed warnings
+        </label>
+        <span id="validation-show-dismissed-hint" class="meta-text validation-show-dismissed-hint">Dismissed warnings are hidden from all records, badges, and field highlights until restored.</span>
+      </div>
       <ul id="validation-banner-list" class="validation-banner-list hidden"></ul>
     </section>
 
@@ -224,7 +231,7 @@
         </section>
         <section class="panel" aria-labelledby="batch-heading">
           <h2 id="batch-heading">Batch editing</h2>
-          <p class="meta-text">Apply find/replace across leaders, control fields, indicators, subfield codes, and values.</p>
+          <p class="meta-text">Find/replace text across records, or set a field to a specific value (e.g. 245 indicators to <code>10</code>) without knowing the current value.</p>
           <form id="batch-form" class="batch-form">
             <fieldset class="record-scope-fieldset" data-scope-panel="batch">
               <legend>Record scope</legend>
@@ -247,14 +254,33 @@
                 </select>
               </label>
             </fieldset>
-            <div class="field-grid">
+            <fieldset class="batch-operation-mode">
+              <legend>Operation</legend>
+              <label class="radio-label"><input type="radio" name="batch-operation" value="find-replace" checked />Find &amp; replace</label>
+              <label class="radio-label"><input type="radio" name="batch-operation" value="set-value" />Set field value</label>
+            </fieldset>
+            <div id="batch-fields-find-replace" class="field-grid batch-fields-panel">
               <label>Find<input id="batch-find" type="text" aria-label="Find text" /></label>
               <label>Replace<input id="batch-replace" type="text" aria-label="Replace text" /></label>
-              <label>Tag filter<input id="batch-tag" type="text" maxlength="3" placeholder="650" aria-label="Optional tag filter" /></label>
-              <label>Subfield<input id="batch-subfield" type="text" maxlength="1" placeholder="a" aria-label="Optional subfield filter" /></label>
+              <label>Tag filter<input id="batch-tag" type="text" maxlength="3" placeholder="650" aria-label="Optional MARC tag filter" /></label>
+              <label id="batch-subfield-filter-label">Subfield filter<input id="batch-subfield" type="text" maxlength="1" placeholder="a" aria-label="Optional subfield filter" /></label>
             </div>
-            <p class="meta-text">Find text is matched literally by default. Patterns like <code>\d+</code>, <code>[A-Z]+</code>, or <code>/pattern/</code> are treated as regular expressions automatically. Leave <strong>Find</strong> empty with <strong>Tag</strong> and <strong>Subfield</strong> set to replace the entire subfield value in scoped records (use <strong>Replace</strong> as the new value).</p>
-            <fieldset class="batch-targets">
+            <div id="batch-fields-set-value" class="field-grid batch-fields-panel hidden">
+              <label>Tag<input id="batch-set-tag" type="text" maxlength="3" placeholder="245" aria-label="MARC tag" /></label>
+              <label>Field part
+                <select id="batch-set-part" aria-label="Field part to set">
+                  <option value="indicators">Indicators</option>
+                  <option value="subfield-value">Subfield value</option>
+                  <option value="remove-subfield">Remove subfield</option>
+                  <option value="control-value">Control field value</option>
+                  <option value="leader">Leader</option>
+                </select>
+              </label>
+              <label id="batch-set-subfield-label" class="hidden">Subfield code<input id="batch-set-subfield" type="text" maxlength="1" placeholder="a" aria-label="Subfield code to set" /></label>
+              <label id="batch-set-value-label">Set to<input id="batch-set-value" type="text" aria-label="Value to set" /></label>
+            </div>
+            <p id="batch-operation-hint" class="meta-text">Find text is matched literally by default. Patterns like <code>\d+</code>, <code>[A-Z]+</code>, or <code>/pattern/</code> are treated as regular expressions. Leave <strong>Find</strong> empty with <strong>Tag filter</strong> and <strong>Subfield filter</strong> set to replace an entire subfield value (<strong>Replace</strong> = new value).</p>
+            <fieldset id="batch-targets-fieldset" class="batch-targets">
               <legend>Update targets</legend>
               <label class="toggle"><input type="checkbox" id="batch-target-leader" checked />Leader</label>
               <label class="toggle"><input type="checkbox" id="batch-target-control-values" checked />Control values</label>
@@ -263,7 +289,7 @@
               <label class="toggle"><input type="checkbox" id="batch-target-subfield-codes" checked />Subfield codes</label>
               <label class="toggle"><input type="checkbox" id="batch-target-subfield-values" checked />Subfield values</label>
             </fieldset>
-            <p class="meta-text">Changing subfield codes can break MARC structure — use with care.</p>
+            <p id="batch-targets-hint" class="meta-text">Changing subfield codes can break MARC structure — use with care.</p>
             <div class="editor-actions">
               <button type="button" id="batch-preview-btn">Preview changes</button>
               <button type="button" id="batch-apply-btn">Apply changes</button>
@@ -427,6 +453,7 @@
           <p class="meta-text">A walkthrough of each area of MARCLite. Everything runs locally in your browser — no records leave your machine.</p>
 
           <nav class="help-toc" aria-label="Help contents">
+            <a href="#help-updates">What's new</a>
             <a href="#help-convert">Convert</a>
             <a href="#help-edit">Edit</a>
             <a href="#help-order">Order</a>
@@ -442,7 +469,31 @@
             <a href="#help-stats">Statistics</a>
           </nav>
 
-          <details id="help-convert" class="help-section" open>
+          <details id="help-updates" class="help-section" open>
+            <summary>What's new — recent updates</summary>
+            <div class="help-section-body">
+              <p>Summary of recent MARCLite improvements:</p>
+              <ul>
+                <li><strong>Custom record templates</strong> — <strong>Save as template</strong> on the field editor stores leader and field layouts; templates appear in the New record toolbar when saved for that record type. Stored in browser extension storage.</li>
+                <li><strong>Dismiss warnings</strong> — hide a warning type on <em>all</em> records from the validation banner; <strong>Show dismissed warnings</strong> lets you restore them. Persists across sessions.</li>
+                <li><strong>Batch: Set field value</strong> — set indicators, subfield values, control values, or leader to an exact value without find/replace (e.g. tag 245 → Indicators → <code>10</code>). Validation <strong>Batch edit</strong> pre-fills this when appropriate.</li>
+                <li><strong>Batch validation refresh</strong> — applying batch or cleanup updates validation counts, badges, and highlights immediately.</li>
+                <li><strong>Record scope ranges</strong> — custom scope accepts <code>3-72</code> and pasted en-dashes (<code>3–72</code>); ranges normalise to plain hyphens.</li>
+                <li><strong>Order tab</strong> — reorder records after import; record numbers elsewhere follow this order.</li>
+                <li><strong>Export tab</strong> — dedicated export with scope, range (all / scoped / visible), preview, and 856 URL check.</li>
+                <li><strong>Compare tab</strong> — side-by-side MARC mnemonic view with record dropdowns.</li>
+                <li><strong>Segmented Leader &amp; 008</strong> — labelled position editors with LoC-aligned padding.</li>
+                <li><strong>Validation profiles</strong> — Cataloguing, Strict, Spreadsheet import on the Edit tab.</li>
+                <li><strong>Sessions &amp; drafts</strong> — <code>.marclite.json</code> save/load; auto-save draft with merge/overwrite on restore.</li>
+                <li><strong>Batch presets</strong> — save and reload common batch setups (including Set field value).</li>
+                <li><strong>Undo</strong> — field editor Undo stack plus batch/cleanup/duplicate undo.</li>
+                <li><strong>Column mapping</strong> — review spreadsheet columns before import.</li>
+                <li><strong>Record search</strong> — filter the record list by title, author, or tag text.</li>
+              </ul>
+            </div>
+          </details>
+
+          <details id="help-convert" class="help-section">
             <summary>Convert — importing files</summary>
             <div class="help-section-body">
               <p>Upload a file on the <strong>Convert</strong> tab by dropping it on the upload zone or clicking to browse. The format is detected from the file extension:</p>
@@ -512,6 +563,7 @@
                 <li>Every issue includes a <strong>"How to fix"</strong> hint explaining where in the tool to correct it.</li>
                 <li>Click an issue to jump directly to the affected record and field, which is highlighted and focused.</li>
                 <li>Some issues offer a one-click <strong>Fix</strong> button in the banner.</li>
+                <li><strong>Dismiss warning</strong> hides that warning type everywhere (all affected records), not just one record. Use <strong>Show dismissed warnings</strong> to review or <strong>Restore warning</strong>.</li>
                 <li>Grouped issues offer a <strong>Batch edit</strong> button that pre-fills the Batch tab with the right scope and targets.</li>
               </ul>
               <p>Invalid inputs are outlined in red (errors) or amber (warnings) inside the field editor as you type.</p>
@@ -519,16 +571,16 @@
           </details>
 
           <details id="help-batch" class="help-section">
-            <summary>Batch — bulk find &amp; replace</summary>
+            <summary>Batch — bulk find &amp; replace and set values</summary>
             <div class="help-section-body">
-              <p>The Batch tab has two areas: <strong>Batch presets</strong> at the top for saving and loading common find/replace setups, and <strong>Batch editing</strong> below for running operations.</p>
+              <p>The Batch tab has two areas: <strong>Batch presets</strong> at the top for saving and loading common setups, and <strong>Batch editing</strong> below for running operations.</p>
               <ul>
                 <li><strong>Record scope</strong> — all records, a custom range (e.g. <code>1-75</code> or <code>1, 6, 17</code>), or the current record. You can also tick record checkboxes on the Edit tab.</li>
                 <li><strong>Record type</strong> — optionally limit batch operations to bibliographic, authority, or holdings records within the scope above.</li>
-                <li><strong>Find/Replace</strong> — matched literally by default; patterns like <code>\d+</code> or <code>/pattern/</code> are detected as regular expressions automatically.</li>
-                <li><strong>Tag and subfield filters</strong> — restrict find/replace, e.g. tag <code>650</code> subfield <code>a</code>. Leave <strong>Find</strong> empty with both set to replace the entire subfield value (use <strong>Replace</strong> as the new value).</li>
-                <li><strong>Update targets</strong> — choose what to touch: leader, control values/tags, indicators, subfield codes/values.</li>
-                <li><strong>Preview changes</strong> shows the diff before applying; <strong>Undo all</strong> reverts an applied batch.</li>
+                <li><strong>Find &amp; replace</strong> — use <strong>Tag filter</strong> and optional <strong>Subfield filter</strong> to limit matches. Leave <strong>Find</strong> empty with both filters set to replace an entire subfield value.</li>
+                <li><strong>Set field value</strong> — separate form: <strong>Tag</strong>, <strong>Field part</strong>, then (for subfields only) <strong>Subfield code</strong> and <strong>Set to</strong>. Example: tag <code>245</code>, Indicators, Set to <code>10</code>. For a subfield: tag <code>650</code>, Subfield value, Subfield code <code>a</code>, Set to your new text.</li>
+                <li><strong>Update targets</strong> (find/replace only) — choose what to touch: leader, control values/tags, indicators, subfield codes/values.</li>
+                <li><strong>Preview changes</strong> shows the diff before applying; <strong>Undo all</strong> reverts an applied batch. Validation updates automatically after apply. Scope ranges like <code>3-72</code> are parsed when you preview or apply.</li>
               </ul>
               <p><strong>Normalize all records</strong> tidies common issues, and <strong>Delete tag from all</strong> strips a field from every scoped record.</p>
             </div>

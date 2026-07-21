@@ -198,7 +198,10 @@ function transformRecordFindReplace(record, options) {
       let value = subfield.value;
 
       if (targets.subfieldCodes) {
-        code = replaceString(code, options.find, options.replace).slice(0, 1) || ' ';
+        const replaced = replaceString(code, options.find, options.replace).slice(0, 1);
+        if (/^[a-z0-9]$/i.test(replaced)) {
+          code = replaced.toLowerCase();
+        }
       }
 
       if (targets.subfieldValues) {
@@ -289,6 +292,144 @@ export function batchSetSubfieldValue(records, indices, tag, subfieldCode, value
         subfields: [{ code, value }],
         group: 'Other',
       });
+    }
+
+    return { ...record, fields };
+  });
+}
+
+/**
+ * @typedef {Object} BatchSetFieldOptions
+ * @property {'leader'|'control-value'|'indicators'|'subfield-value'|'remove-subfield'} fieldPart
+ * @property {string} [tag]
+ * @property {string} [subfieldCode]
+ * @property {string} value
+ * @property {number[]} [indices]
+ */
+
+/**
+ * @param {MarcRecord[]} records
+ * @param {number[]} indices
+ * @param {BatchSetFieldOptions} options
+ * @returns {MarcRecord[]}
+ */
+/**
+ * @param {MarcRecord[]} records
+ * @param {number[]} indices
+ * @param {string} tag
+ * @param {string} subfieldCode
+ * @returns {MarcRecord[]}
+ */
+export function batchRemoveSubfield(records, indices, tag, subfieldCode) {
+  const normalizedTag = tag.padStart(3, '0').slice(-3);
+  const trimmed = subfieldCode.trim();
+  const removeBlankCodes = trimmed.length === 0 && subfieldCode.length > 0;
+  const code = trimmed.slice(0, 1);
+
+  if (!removeBlankCodes && !code) {
+    return records;
+  }
+
+  return records.map((record, recordIndex) => {
+    if (!isInScope(recordIndex, indices)) {
+      return record;
+    }
+
+    let changed = false;
+    const fields = record.fields.map((field) => {
+      if (field.type !== 'data' || field.tag !== normalizedTag) {
+        return field;
+      }
+
+      const subfields = field.subfields.filter((subfield) => {
+        if (removeBlankCodes) {
+          return String(subfield.code ?? '').trim().length > 0;
+        }
+        return subfield.code !== code;
+      });
+      if (subfields.length === field.subfields.length) {
+        return field;
+      }
+
+      changed = true;
+      return { ...field, subfields };
+    });
+
+    return changed ? { ...record, fields } : record;
+  });
+}
+
+export function batchSetFieldValue(records, indices, options) {
+  const { fieldPart, value } = options;
+
+  if (fieldPart === 'remove-subfield') {
+    if (!options.tag || !options.subfieldCode) {
+      return records;
+    }
+    return batchRemoveSubfield(records, indices, options.tag, options.subfieldCode);
+  }
+
+  if (fieldPart === 'subfield-value') {
+    if (!options.tag || !options.subfieldCode) {
+      return records;
+    }
+    return batchSetSubfieldValue(records, indices, options.tag, options.subfieldCode, value);
+  }
+
+  const normalizedTag = options.tag?.padStart(3, '0').slice(-3);
+
+  return records.map((record, recordIndex) => {
+    if (!isInScope(recordIndex, indices)) {
+      return record;
+    }
+
+    if (fieldPart === 'leader') {
+      if (record.leader === value) {
+        return record;
+      }
+      return { ...record, leader: value };
+    }
+
+    if (!normalizedTag) {
+      return record;
+    }
+
+    let matched = false;
+    const fields = record.fields.map((field) => {
+      if (fieldPart === 'control-value') {
+        if (field.type !== 'control' || field.tag !== normalizedTag) {
+          return field;
+        }
+        matched = true;
+        if (field.value === value) {
+          return field;
+        }
+        return { ...field, value };
+      }
+
+      if (fieldPart === 'indicators') {
+        if (field.type !== 'data' || field.tag !== normalizedTag) {
+          return field;
+        }
+        matched = true;
+        const normalized = value.padEnd(2, ' ').slice(0, 2);
+        const ind1 = normalized[0] ?? ' ';
+        const ind2 = normalized[1] ?? ' ';
+        if (field.ind1 === ind1 && field.ind2 === ind2) {
+          return field;
+        }
+        return { ...field, ind1, ind2 };
+      }
+
+      return field;
+    });
+
+    if (!matched) {
+      return record;
+    }
+
+    if (fields.every((field, index) => field === record.fields[index])) {
+      return record;
     }
 
     return { ...record, fields };

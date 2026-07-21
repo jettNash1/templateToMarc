@@ -28,7 +28,7 @@ import {
   hasValidationErrors,
   groupValidationIssues,
 } from '../lib/marc-validate.js';
-import { batchFindReplace, batchDeleteTag, batchNormalize, batchSetSubfieldValue, DEFAULT_BATCH_TARGETS } from '../lib/batch-edit.js';
+import { batchFindReplace, batchDeleteTag, batchNormalize, batchSetSubfieldValue, batchSetFieldValue, DEFAULT_BATCH_TARGETS } from '../lib/batch-edit.js';
 import { diffMarcRecords, summarizeChangeLog } from '../lib/marc-diff.js';
 import {
   initRoadmapFeatures,
@@ -50,7 +50,13 @@ import {
   toggleScopedRecord,
 } from '../lib/app-state.js';
 import { formatRecordRanges, parseRecordScope } from '../lib/record-scope.js';
-import { loadCustomTemplates, saveCustomTemplates } from '../lib/session-storage.js';
+import {
+  getActiveValidationIssues,
+  getWarningTypeDismissKey,
+  isIssueDismissed,
+  pruneDismissedWarnings,
+} from '../lib/validation-dismiss.js';
+import { loadCustomTemplates, loadDismissedWarnings, saveCustomTemplates, saveDismissedWarnings } from '../lib/session-storage.js';
 import { buildDefault008, createFixedFieldEditor, getLeaderDefinition, getField008Definition, normalizeControlFieldValue, normalizeMarcRecord, normalizeMarcRecords, padFixedField, shouldUseSegmentedFixedField } from '../lib/marc-fixed-field.js';
 
 /** @typedef {import('../lib/marc-builder.js').MarcRecord} MarcRecord */
@@ -87,6 +93,11 @@ let duplicateUndoState = null;
 /** @type {import('../lib/marc-validate.js').ValidationIssue[]} */
 let allValidationIssues = [];
 
+/** @type {Set<string>} */
+let dismissedWarningKeys = new Set();
+
+let showDismissedWarnings = false;
+
 const navTabs = document.querySelectorAll('.nav-tab');
 const tabPanels = document.querySelectorAll('.tab-panel');
 const uploadStatus = document.getElementById('upload-status');
@@ -105,6 +116,8 @@ const validationBanner = document.getElementById('validation-banner');
 const validationBannerToggle = document.getElementById('validation-banner-toggle');
 const validationBannerSummary = document.getElementById('validation-banner-summary');
 const validationBannerList = document.getElementById('validation-banner-list');
+const validationShowDismissed = document.getElementById('validation-show-dismissed');
+const validationBannerControls = document.getElementById('validation-banner-controls');
 const exportFormat = document.getElementById('export-format');
 const exportPreview = document.getElementById('export-preview');
 const blockInvalidExport = document.getElementById('block-invalid-export');
@@ -228,8 +241,43 @@ function refreshEditView() {
   }
 
   allValidationIssues = validateAllRecords(state.marcRecords, state.validationProfile);
-  renderValidationBanner();
+  afterValidationUpdated();
   finishEditRefresh();
+  return Promise.resolve();
+}
+
+function refreshRecordsAfterBulkEdit() {
+  if (!hasRecords()) {
+    allValidationIssues = [];
+    renderValidationBanner();
+    return Promise.resolve();
+  }
+
+  syncScopeFieldsets();
+  populateCompareRecordSelects();
+  renderRecordOrderList();
+
+  const finish = () => {
+    renderRecordList();
+    if (state.selectedIndex >= 0 && state.selectedIndex < state.marcRecords.length) {
+      renderEditor(state.marcRecords[state.selectedIndex]);
+    } else {
+      renderRecordListValidationBadges();
+      applyValidationHighlights(state.selectedIndex);
+    }
+    refreshExportPreview();
+    flashAutosaveStatus();
+    roadmapApi?.scheduleDraftSave?.();
+    roadmapApi?.updateLinkCheckButtonLabel?.();
+  };
+
+  if (state.marcRecords.length > 50) {
+    return validateAllRecordsAsync().then(finish);
+  }
+
+  allValidationIssues = validateAllRecords(state.marcRecords, state.validationProfile);
+  afterValidationUpdated();
+  finish();
   return Promise.resolve();
 }
 
@@ -252,7 +300,7 @@ async function validateAllRecordsAsync() {
     },
   ).then((chunkIssues) => chunkIssues.flat());
 
-  renderValidationBanner();
+  afterValidationUpdated();
 }
 
 async function refreshExportPreview() {
@@ -308,9 +356,125 @@ function getVisibleRecordIndices() {
 /**
  * @returns {import('../lib/marc-validate.js').ValidationIssue[]}
  */
-function getVisibleValidationIssues() {
+function getVisibleValidationIssuesForDisplay() {
   const visibleIndices = new Set(getVisibleRecordIndices());
   return allValidationIssues.filter((issue) => visibleIndices.has(issue.recordIndex ?? -1));
+}
+
+/**
+ * Active visible issues (dismissed warnings excluded) for counts, navigation, and highlights.
+ * @returns {import('../lib/marc-validate.js').ValidationIssue[]}
+ */
+function getVisibleValidationIssues() {
+  return getActiveValidationIssues(getVisibleValidationIssuesForDisplay(), dismissedWarningKeys);
+}
+
+/**
+ * @param {number} recordIndex
+ * @returns {import('../lib/marc-validate.js').ValidationIssue[]}
+ */
+function getRecordActiveIssues(recordIndex) {
+  return getActiveValidationIssues(getRecordIssues(allValidationIssues, recordIndex), dismissedWarningKeys);
+}
+
+async function persistDismissedWarnings() {
+  await saveDismissedWarnings([...dismissedWarningKeys]);
+}
+
+function syncDismissedWarningsAfterValidation() {
+  if (pruneDismissedWarnings(dismissedWarningKeys, allValidationIssues)) {
+    persistDismissedWarnings();
+  }
+}
+
+function afterValidationUpdated() {
+  syncDismissedWarningsAfterValidation();
+  renderValidationBanner();
+}
+
+async function dismissWarningType(warningTypeKey) {
+  if (!warningTypeKey) {
+    return;
+  }
+  dismissedWarningKeys.add(warningTypeKey);
+  await persistDismissedWarnings();
+  renderValidationBanner();
+  renderRecordListValidationBadges();
+  if (state.selectedIndex >= 0) {
+    applyValidationHighlights(state.selectedIndex);
+  }
+}
+
+async function restoreWarningType(warningTypeKey) {
+  if (!warningTypeKey) {
+    return;
+  }
+  dismissedWarningKeys.delete(warningTypeKey);
+  await persistDismissedWarnings();
+  renderValidationBanner();
+  renderRecordListValidationBadges();
+  if (state.selectedIndex >= 0) {
+    applyValidationHighlights(state.selectedIndex);
+  }
+}
+
+async function dismissWarning(issue) {
+  if (issue.level !== 'warning') {
+    return;
+  }
+  await dismissWarningType(getWarningTypeDismissKey(issue));
+}
+
+async function restoreDismissedWarning(issue) {
+  await restoreWarningType(getWarningTypeDismissKey(issue));
+}
+
+/**
+ * @param {import('../lib/marc-validate.js').ValidationIssue} issue
+ * @param {{ dismissed?: boolean }} [options]
+ * @returns {HTMLDivElement}
+ */
+function createValidationDismissActions(issue, options = {}) {
+  const actions = document.createElement('div');
+  actions.className = 'validation-banner-issue-actions';
+
+  if (issue.level !== 'warning') {
+    return actions;
+  }
+
+  const button = document.createElement('button');
+  button.type = 'button';
+
+  if (options.dismissed) {
+    button.className = 'secondary validation-banner-restore';
+    button.textContent = 'Restore warning';
+    button.setAttribute('aria-label', `Restore warning: ${issue.message}`);
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      restoreDismissedWarning(issue);
+    });
+  } else {
+    button.className = 'secondary validation-banner-dismiss';
+    button.textContent = 'Dismiss warning';
+    button.setAttribute('aria-label', `Dismiss warning everywhere: ${issue.message}`);
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      dismissWarning(issue);
+    });
+  }
+
+  actions.append(button);
+  return actions;
+}
+
+/**
+ * @param {import('../lib/marc-validate.js').ValidationIssue[]} _issues
+ * @param {import('../lib/marc-validate.js').GroupedValidationIssue} group
+ * @returns {Promise<void>}
+ */
+async function dismissWarningGroup(group) {
+  const warningTypeKey = group.issueKey ?? group.message;
+  await dismissWarningType(warningTypeKey);
 }
 
 function getRecordListFilterLabel() {
@@ -412,7 +576,7 @@ function buildRecordListItem(index) {
 
   item.append(scopeLabel, content);
 
-  const recordIssues = getRecordIssues(allValidationIssues, index);
+  const recordIssues = getRecordActiveIssues(index);
   const errorCount = recordIssues.filter((issue) => issue.level === 'error').length;
   const warningCount = recordIssues.filter((issue) => issue.level === 'warning').length;
   if (errorCount > 0) {
@@ -577,7 +741,7 @@ function formatSubfieldCodeForDisplay(code) {
  */
 function applySubfieldCode(subfield, text) {
   const normalized = String(text ?? '').slice(-1);
-  subfield.code = normalized || ' ';
+  subfield.code = normalized.trim() ? normalized.toLowerCase() : '';
 }
 
 /**
@@ -655,7 +819,7 @@ function commitRecordChange(record, immediate = false) {
     marcPreview.textContent = recordToMarcText(record);
     refreshExportPreview();
     allValidationIssues = validateAllRecords(state.marcRecords, state.validationProfile);
-    renderValidationBanner();
+    afterValidationUpdated();
     renderRecordListValidationBadges();
     applyValidationHighlights(state.selectedIndex);
     flashAutosaveStatus();
@@ -763,6 +927,7 @@ function applyScopeFromText(panel) {
 
   setScopedIndices(parsed.indices);
   setRecordScopeMode('custom');
+  input.value = formatRecordRanges(parsed.indices);
   syncScopeFieldsets();
   return null;
 }
@@ -1008,7 +1173,15 @@ function getScopeIndicesOrError(statusEl, panel = 'batch') {
     return null;
   }
 
-  if (state.recordScopeMode === 'custom') {
+  const scopeInput = panel === 'cleanup'
+    ? document.getElementById('cleanup-scope-text')
+    : panel === 'export'
+      ? document.getElementById('export-scope-text')
+      : document.getElementById('batch-scope-text');
+
+  const hasScopeText = scopeInput instanceof HTMLInputElement && scopeInput.value.trim().length > 0;
+
+  if (state.recordScopeMode === 'custom' || hasScopeText) {
     const scopeError = applyScopeFromText(panel);
     if (scopeError) {
       statusEl.textContent = scopeError;
@@ -1054,43 +1227,84 @@ function prefillBatchFromGroupedIssue(group) {
   document.getElementById('batch-replace').value = '';
   document.getElementById('batch-tag').value = group.tag ?? '';
   document.getElementById('batch-subfield').value = group.subfieldCode ?? '';
+  document.getElementById('batch-set-tag').value = group.tag ?? '';
+  document.getElementById('batch-set-subfield').value = group.subfieldCode ?? '';
+  document.getElementById('batch-set-value').value = '';
 
-  const targets = { ...DEFAULT_BATCH_TARGETS };
   const issueKey = group.issueKey ?? '';
+  const useSetValue = issueKey === '245-indicators'
+    || issueKey.startsWith('indicator')
+    || issueKey.startsWith('empty-control')
+    || issueKey.startsWith('008-length')
+    || issueKey.startsWith('leader');
 
-  if (issueKey.startsWith('leader')) {
-    Object.keys(targets).forEach((key) => {
-      targets[key] = key === 'leader';
-    });
-  } else if (issueKey.startsWith('empty-subfield') || issueKey.startsWith('invalid-subfield-code')) {
-    targets.leader = false;
-    targets.controlTags = false;
-    targets.controlValues = false;
-    targets.indicators = false;
-    targets.subfieldCodes = false;
-    targets.subfieldValues = true;
-  } else if (issueKey.startsWith('duplicate-control') || issueKey.startsWith('empty-control') || issueKey.startsWith('008-length') || issueKey.startsWith('empty-001')) {
-    targets.leader = false;
-    targets.controlTags = issueKey.startsWith('duplicate-control');
-    targets.controlValues = true;
-    targets.indicators = false;
-    targets.subfieldCodes = false;
-    targets.subfieldValues = false;
-  } else if (issueKey.startsWith('indicator')) {
-    targets.leader = false;
-    targets.controlTags = false;
-    targets.controlValues = false;
-    targets.indicators = true;
-    targets.subfieldCodes = false;
-    targets.subfieldValues = false;
+  if (useSetValue) {
+    setBatchOperationMode('set-value');
+    const setPartSelect = document.getElementById('batch-set-part');
+    if (issueKey.startsWith('leader')) {
+      if (setPartSelect instanceof HTMLSelectElement) {
+        setPartSelect.value = 'leader';
+      }
+      document.getElementById('batch-set-tag').value = '';
+    } else if (issueKey.startsWith('empty-control') || issueKey.startsWith('008-length')) {
+      if (setPartSelect instanceof HTMLSelectElement) {
+        setPartSelect.value = 'control-value';
+      }
+    } else {
+      if (setPartSelect instanceof HTMLSelectElement) {
+        setPartSelect.value = 'indicators';
+      }
+      if (issueKey === '245-indicators' && !group.tag) {
+        document.getElementById('batch-set-tag').value = '245';
+      }
+    }
+    syncBatchOperationUI();
+  } else {
+    setBatchOperationMode('find-replace');
+    const targets = { ...DEFAULT_BATCH_TARGETS };
+
+    if (issueKey.startsWith('empty-subfield')) {
+      targets.leader = false;
+      targets.controlTags = false;
+      targets.controlValues = false;
+      targets.indicators = false;
+      targets.subfieldCodes = false;
+      targets.subfieldValues = true;
+      const setPartSelect = document.getElementById('batch-set-part');
+      setBatchOperationMode('set-value');
+      if (setPartSelect instanceof HTMLSelectElement) {
+        setPartSelect.value = 'subfield-value';
+      }
+      syncBatchOperationUI();
+    } else if (issueKey.startsWith('invalid-subfield-code')) {
+      targets.leader = false;
+      targets.controlTags = false;
+      targets.controlValues = false;
+      targets.indicators = false;
+      targets.subfieldCodes = false;
+      targets.subfieldValues = false;
+      const setPartSelect = document.getElementById('batch-set-part');
+      setBatchOperationMode('set-value');
+      if (setPartSelect instanceof HTMLSelectElement) {
+        setPartSelect.value = 'remove-subfield';
+      }
+      syncBatchOperationUI();
+    } else if (issueKey.startsWith('duplicate-control') || issueKey.startsWith('empty-001')) {
+      targets.leader = false;
+      targets.controlTags = issueKey.startsWith('duplicate-control');
+      targets.controlValues = true;
+      targets.indicators = false;
+      targets.subfieldCodes = false;
+      targets.subfieldValues = false;
+    }
+
+    document.getElementById('batch-target-leader').checked = targets.leader;
+    document.getElementById('batch-target-control-values').checked = targets.controlValues;
+    document.getElementById('batch-target-control-tags').checked = targets.controlTags;
+    document.getElementById('batch-target-indicators').checked = targets.indicators;
+    document.getElementById('batch-target-subfield-codes').checked = targets.subfieldCodes;
+    document.getElementById('batch-target-subfield-values').checked = targets.subfieldValues;
   }
-
-  document.getElementById('batch-target-leader').checked = targets.leader;
-  document.getElementById('batch-target-control-values').checked = targets.controlValues;
-  document.getElementById('batch-target-control-tags').checked = targets.controlTags;
-  document.getElementById('batch-target-indicators').checked = targets.indicators;
-  document.getElementById('batch-target-subfield-codes').checked = targets.subfieldCodes;
-  document.getElementById('batch-target-subfield-values').checked = targets.subfieldValues;
 
   const statusEl = document.getElementById('batch-status');
   const scopeLabel = formatRecordRanges(group.recordIndices);
@@ -1100,6 +1314,9 @@ function prefillBatchFromGroupedIssue(group) {
   }
   if (group.subfieldCode) {
     message += `, subfield $${group.subfieldCode}`;
+  }
+  if (useSetValue || issueKey.startsWith('empty-subfield')) {
+    message += '. Choose a value and preview or apply.';
   }
   statusEl.textContent = `${message}.`;
 
@@ -1157,10 +1374,13 @@ function navigateToNextValidationIssue() {
  */
 function getIssueFixHint(issueKey) {
   if (issueKey.startsWith('indicator') || issueKey === '245-indicators') {
-    return 'How to fix: edit the Indicators field on the field card (two characters, e.g. 10 or 00), or use the Batch tab with the Indicators target.';
+    return 'How to fix: edit the Indicators field on the field card (two characters, e.g. 10 or 00), or use Batch → Set field value with tag 245 and Indicators.';
   }
   if (issueKey.startsWith('leader')) {
     return 'How to fix: edit the Leader segments at the top of the field editor (Edit tab).';
+  }
+  if (issueKey === 'leader-008-mismatch') {
+    return 'How to fix: align Leader position 07 (type of record) with 008 position 00 (type of material), or dismiss if the mismatch is intentional for your cataloguing practice.';
   }
   if (issueKey === '008-length') {
     return 'How to fix: edit the 008 segment inputs on its field card in the field editor.';
@@ -1172,7 +1392,7 @@ function getIssueFixHint(issueKey) {
     return 'How to fix: fill in the empty subfield value on the field card, or remove the subfield with its Remove button.';
   }
   if (issueKey.startsWith('invalid-subfield-code')) {
-    return 'How to fix: correct the Code input (single letter or digit) next to the subfield value on the field card.';
+    return 'How to fix: correct the Code input (single letter or digit) next to the subfield value on the field card, or use Batch → Set field value → Remove subfield.';
   }
   if (issueKey.startsWith('duplicate-control')) {
     return 'How to fix: remove the duplicate field using the Remove button on its field card.';
@@ -1198,43 +1418,18 @@ function getIssueFixHint(issueKey) {
   return 'How to fix: open the record in the Edit tab \u2014 click the issue to jump straight to the affected field.';
 }
 
-function renderValidationBanner() {
-  const visibleIssues = getVisibleValidationIssues();
-  const { errors, warnings, recordsWithErrors } = summarizeValidation(visibleIssues);
-  const filterLabel = getRecordListFilterLabel();
-  const filterSuffix = filterLabel ? ` (${filterLabel} records only)` : '';
-
-  if (errors === 0 && warnings === 0) {
-    validationBanner.classList.add('hidden');
-    validationBannerList.classList.add('hidden');
-    validationBannerToggle.setAttribute('aria-expanded', 'false');
-    return;
-  }
-
-  validationBanner.classList.remove('hidden');
-  validationBanner.classList.toggle('validation-banner-warnings-only', errors === 0);
-
-  if (errors > 0) {
-    validationBannerSummary.textContent = `${errors} validation error${errors === 1 ? '' : 's'} in ${recordsWithErrors} record${recordsWithErrors === 1 ? '' : 's'}${filterSuffix}${warnings > 0 ? ` (${warnings} warning${warnings === 1 ? '' : 's'})` : ''} — select to view details`;
-  } else {
-    validationBannerSummary.textContent = `${warnings} validation warning${warnings === 1 ? '' : 's'}${filterSuffix} — select to view details`;
-  }
-
-  const openGroupKeys = new Set(
-    [...validationBannerList.querySelectorAll('.validation-banner-group[open]')].map(
-      (element) => element.dataset.groupKey,
-    ),
-  );
-
-  validationBannerList.innerHTML = '';
-
-  const { groups, individuals } = groupValidationIssues(visibleIssues);
-
+/**
+ * @param {import('../lib/marc-validate.js').GroupedValidationIssue[]} groups
+ * @param {{ dismissed?: boolean }} [options]
+ */
+function appendValidationGroupsToBanner(groups, options = {}) {
   groups.forEach((group) => {
     const details = document.createElement('details');
     details.className = 'validation-banner-group';
-    details.dataset.groupKey = `${group.level}|${group.issueKey}`;
-    details.open = openGroupKeys.has(details.dataset.groupKey);
+    if (options.dismissed) {
+      details.classList.add('validation-banner-dismissed-item');
+    }
+    details.dataset.groupKey = `${group.level}|${group.issueKey}${options.dismissed ? '|dismissed' : ''}`;
 
     const summary = document.createElement('summary');
     summary.className = 'validation-banner-group-summary';
@@ -1268,7 +1463,26 @@ function renderValidationBanner() {
 
     body.append(recordLinks);
 
-    if (group.supportsBatchEdit) {
+    if (group.level === 'warning') {
+      const groupActions = document.createElement('div');
+      groupActions.className = 'validation-banner-group-actions';
+      const dismissAllButton = document.createElement('button');
+      dismissAllButton.type = 'button';
+      dismissAllButton.className = options.dismissed ? 'secondary validation-banner-restore' : 'secondary validation-banner-dismiss';
+      dismissAllButton.textContent = options.dismissed ? 'Restore warning' : 'Dismiss warning';
+      dismissAllButton.addEventListener('click', async () => {
+        const warningTypeKey = group.issueKey ?? group.message;
+        if (options.dismissed) {
+          await restoreWarningType(warningTypeKey);
+          return;
+        }
+        await dismissWarningGroup(group);
+      });
+      groupActions.append(dismissAllButton);
+      body.append(groupActions);
+    }
+
+    if (group.supportsBatchEdit && !options.dismissed) {
       const batchButton = document.createElement('button');
       batchButton.type = 'button';
       batchButton.className = 'secondary validation-banner-batch-edit';
@@ -1281,10 +1495,19 @@ function renderValidationBanner() {
     details.append(body);
     validationBannerList.append(details);
   });
+}
 
+/**
+ * @param {import('../lib/marc-validate.js').ValidationIssue[]} individuals
+ * @param {{ dismissed?: boolean }} [options]
+ */
+function appendValidationIndividualsToBanner(individuals, options = {}) {
   individuals.forEach((issue) => {
     const item = document.createElement('li');
     item.className = 'validation-banner-individual';
+    if (options.dismissed) {
+      item.classList.add('validation-banner-dismissed-item');
+    }
 
     const button = document.createElement('button');
     button.type = 'button';
@@ -1295,7 +1518,11 @@ function renderValidationBanner() {
         : ` [${issue.tag ? `tag ${issue.tag}` : `field ${issue.fieldIndex + 1}`}]`
       : issue.path === 'leader'
         ? ' [Leader]'
-        : '';
+        : issue.path === 'leader-008-mismatch'
+          ? ' [tag 008]'
+          : issue.tag
+            ? ` [tag ${issue.tag}]`
+            : '';
     const recordLabel = issue.recordLabel ?? `Record ${(issue.recordIndex ?? 0) + 1}`;
     button.textContent = `${recordLabel} · ${issue.level === 'error' ? 'Error' : 'Warning'}:${location} ${issue.message}`;
     button.addEventListener('click', () => navigateToIssue(issue));
@@ -1306,23 +1533,83 @@ function renderValidationBanner() {
     fixHint.textContent = getIssueFixHint(issue.issueKey ?? '');
     item.append(fixHint);
 
-    const record = issue.recordIndex != null ? state.marcRecords[issue.recordIndex] : null;
-    const fixButton = record && roadmapApi?.renderAutoFixButton?.(issue, record, (fixed) => {
-      state.marcRecords[issue.recordIndex] = fixed;
-      state.parsedRows[issue.recordIndex] = recordToParsedRow(fixed);
-      refreshEditView();
-      renderEditor(fixed);
-    });
-    if (fixButton) {
-      item.append(fixButton);
+    if (!options.dismissed) {
+      const record = issue.recordIndex != null ? state.marcRecords[issue.recordIndex] : null;
+      const fixButton = record && roadmapApi?.renderAutoFixButton?.(issue, record, (fixed) => {
+        state.marcRecords[issue.recordIndex] = fixed;
+        state.parsedRows[issue.recordIndex] = recordToParsedRow(fixed);
+        refreshEditView();
+        renderEditor(fixed);
+      });
+      if (fixButton) {
+        item.append(fixButton);
+      }
     }
 
+    item.append(createValidationDismissActions(issue, { dismissed: options.dismissed }));
     validationBannerList.append(item);
   });
 }
 
+function renderValidationBanner() {
+  const visibleAllIssues = getVisibleValidationIssuesForDisplay();
+  const activeIssues = getActiveValidationIssues(visibleAllIssues, dismissedWarningKeys);
+  const dismissedIssues = visibleAllIssues.filter((issue) => isIssueDismissed(issue, dismissedWarningKeys));
+  const { errors, warnings, recordsWithErrors } = summarizeValidation(activeIssues);
+  const filterLabel = getRecordListFilterLabel();
+  const filterSuffix = filterLabel ? ` (${filterLabel} records only)` : '';
+  const dismissedCount = dismissedIssues.length;
+  const showDismissedSection = showDismissedWarnings && dismissedCount > 0;
+  const hasActiveContent = errors > 0 || warnings > 0;
+  const showBanner = hasActiveContent || dismissedCount > 0;
+
+  validationBannerControls?.classList.toggle('hidden', dismissedCount === 0);
+  if (validationShowDismissed instanceof HTMLInputElement) {
+    validationShowDismissed.checked = showDismissedWarnings;
+  }
+
+  if (!showBanner) {
+    validationBanner.classList.add('hidden');
+    validationBannerList.classList.add('hidden');
+    validationBannerToggle.setAttribute('aria-expanded', 'false');
+    return;
+  }
+
+  validationBanner.classList.remove('hidden');
+  validationBanner.classList.toggle('validation-banner-warnings-only', errors === 0 && warnings > 0);
+
+  if (errors > 0) {
+    validationBannerSummary.textContent = `${errors} validation error${errors === 1 ? '' : 's'} in ${recordsWithErrors} record${recordsWithErrors === 1 ? '' : 's'}${filterSuffix}${warnings > 0 ? ` (${warnings} warning${warnings === 1 ? '' : 's'})` : ''}${dismissedCount > 0 ? ` · ${dismissedCount} dismissed` : ''} — select to view details`;
+  } else if (warnings > 0) {
+    validationBannerSummary.textContent = `${warnings} validation warning${warnings === 1 ? '' : 's'}${filterSuffix}${dismissedCount > 0 ? ` · ${dismissedCount} dismissed` : ''} — select to view details`;
+  } else {
+    validationBannerSummary.textContent = `All visible warnings dismissed (${dismissedCount}${filterSuffix}). Enable "Show dismissed warnings" below to review or restore.`;
+  }
+
+  validationBannerList.innerHTML = '';
+
+  if (!hasActiveContent && !showDismissedSection) {
+    return;
+  }
+
+  const { groups, individuals } = groupValidationIssues(activeIssues);
+  appendValidationGroupsToBanner(groups);
+  appendValidationIndividualsToBanner(individuals);
+
+  if (showDismissedSection) {
+    const heading = document.createElement('li');
+    heading.className = 'validation-banner-dismissed-heading';
+    heading.textContent = `Dismissed warnings (${dismissedCount})`;
+    validationBannerList.append(heading);
+
+    const dismissedGrouped = groupValidationIssues(dismissedIssues);
+    appendValidationGroupsToBanner(dismissedGrouped.groups, { dismissed: true });
+    appendValidationIndividualsToBanner(dismissedGrouped.individuals, { dismissed: true });
+  }
+}
+
 function applyValidationHighlights(recordIndex) {
-  const recordIssues = getRecordIssues(allValidationIssues, recordIndex);
+  const recordIssues = getRecordActiveIssues(recordIndex);
   const leaderIssues = getIssuesForLeader(recordIssues);
   const leaderGroup = leaderEditor.querySelector('.field-group');
   const leaderLevel = getHighestIssueLevel(leaderIssues);
@@ -1412,7 +1699,7 @@ function refreshValidationUI() {
   }
 
   allValidationIssues = validateAllRecords(state.marcRecords, state.validationProfile);
-  renderValidationBanner();
+  afterValidationUpdated();
   renderRecordListValidationBadges();
   applyValidationHighlights(state.selectedIndex);
   flashAutosaveStatus();
@@ -1425,7 +1712,7 @@ function renderRecordListValidationBadges() {
       return;
     }
 
-    const recordIssues = getRecordIssues(allValidationIssues, index);
+    const recordIssues = getRecordActiveIssues(index);
     const errorCount = recordIssues.filter((issue) => issue.level === 'error').length;
     const warningCount = recordIssues.filter((issue) => issue.level === 'warning').length;
 
@@ -1535,7 +1822,7 @@ function createPlainFixedValueInput({
 }
 
 function renderLeader(record, recordIndex) {
-  const recordIssues = getRecordIssues(allValidationIssues, recordIndex);
+  const recordIssues = getRecordActiveIssues(recordIndex);
   const leaderIssues = getIssuesForLeader(recordIssues);
   const leaderLevel = getHighestIssueLevel(leaderIssues);
   const recordType = record.recordType ?? 'bibliographic';
@@ -1664,7 +1951,7 @@ function createDataFieldControlsRow(field, fieldIndex, fieldIssues, record) {
 }
 
 function renderFieldCard(field, fieldIndex, record, recordIndex) {
-  const recordIssues = getRecordIssues(allValidationIssues, recordIndex);
+  const recordIssues = getRecordActiveIssues(recordIndex);
   const fieldIssues = recordIssues.filter((issue) => issue.fieldIndex === fieldIndex);
   const fieldLevel = getHighestIssueLevel(fieldIssues);
 
@@ -1903,8 +2190,62 @@ function escapeHtml(value) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function getBatchOperationMode() {
+  return document.querySelector('input[name="batch-operation"]:checked')?.value ?? 'find-replace';
+}
+
+function setBatchOperationMode(mode) {
+  const input = document.querySelector(`input[name="batch-operation"][value="${mode}"]`);
+  if (input instanceof HTMLInputElement) {
+    input.checked = true;
+  }
+  syncBatchOperationUI();
+}
+
+function syncBatchOperationUI() {
+  const isSetValue = getBatchOperationMode() === 'set-value';
+  const setPartSelect = document.getElementById('batch-set-part');
+  const fieldPart = setPartSelect instanceof HTMLSelectElement ? setPartSelect.value : 'indicators';
+  const findInput = document.getElementById('batch-find');
+  const findEmpty = !(findInput instanceof HTMLInputElement) || !findInput.value.trim();
+
+  document.getElementById('batch-fields-find-replace')?.classList.toggle('hidden', isSetValue);
+  document.getElementById('batch-fields-set-value')?.classList.toggle('hidden', !isSetValue);
+  document.getElementById('batch-targets-fieldset')?.classList.toggle('hidden', isSetValue);
+  document.getElementById('batch-targets-hint')?.classList.toggle('hidden', isSetValue);
+
+  document.getElementById('batch-set-subfield-label')?.classList.toggle(
+    'hidden',
+    fieldPart !== 'subfield-value' && fieldPart !== 'remove-subfield',
+  );
+  document.getElementById('batch-set-tag')?.closest('label')?.classList.toggle('hidden', fieldPart === 'leader');
+  document.getElementById('batch-set-value-label')?.classList.toggle('hidden', fieldPart === 'remove-subfield');
+
+  document.getElementById('batch-subfield-filter-label')?.classList.toggle('hidden', !findEmpty);
+
+  const hint = document.getElementById('batch-operation-hint');
+  if (hint) {
+    if (isSetValue) {
+      hint.innerHTML = fieldPart === 'remove-subfield'
+        ? '<strong>Set field value</strong> — enter the <strong>Tag</strong>, choose <strong>Remove subfield</strong>, and type the <strong>Subfield code</strong> to delete (e.g. <code>a</code>) from every matching field in scope.'
+        : fieldPart === 'subfield-value'
+        ? '<strong>Set field value</strong> — enter the <strong>Tag</strong>, choose <strong>Subfield value</strong>, type the <strong>Subfield code</strong> (e.g. <code>a</code>), then the new text in <strong>Set to</strong>.'
+        : fieldPart === 'leader'
+          ? '<strong>Set field value</strong> — enter the full 24-character leader in <strong>Set to</strong>.'
+          : fieldPart === 'control-value'
+            ? '<strong>Set field value</strong> — enter the control <strong>Tag</strong> (e.g. <code>008</code>) and the new value in <strong>Set to</strong>.'
+            : '<strong>Set field value</strong> — enter the <strong>Tag</strong> and two indicator characters in <strong>Set to</strong> (e.g. <code>10</code> or <code>00</code>).';
+    } else if (findEmpty) {
+      hint.innerHTML = 'Leave <strong>Find</strong> empty, set <strong>Tag filter</strong> and <strong>Subfield filter</strong>, then enter the new subfield text in <strong>Replace</strong>.';
+    } else {
+      hint.innerHTML = 'Find text is matched literally by default. Patterns like <code>\\d+</code>, <code>[A-Z]+</code>, or <code>/pattern/</code> are treated as regular expressions. Use <strong>Tag filter</strong> and optional <strong>Subfield filter</strong> to narrow matches.';
+    }
+  }
+}
+
 function getBatchReplaceOptions() {
   return {
+    mode: 'find-replace',
     find: document.getElementById('batch-find').value,
     replace: document.getElementById('batch-replace').value,
     tagFilter: document.getElementById('batch-tag').value.trim() || undefined,
@@ -1918,6 +2259,20 @@ function getBatchReplaceOptions() {
       subfieldValues: document.getElementById('batch-target-subfield-values').checked,
     },
   };
+}
+
+function getBatchOperationOptions() {
+  if (getBatchOperationMode() === 'set-value') {
+    const setPartSelect = document.getElementById('batch-set-part');
+    return {
+      mode: 'set-value',
+      fieldPart: setPartSelect instanceof HTMLSelectElement ? setPartSelect.value : 'indicators',
+      tagFilter: document.getElementById('batch-set-tag')?.value.trim() || undefined,
+      subfieldFilter: document.getElementById('batch-set-subfield')?.value.trim() || undefined,
+      replace: document.getElementById('batch-set-value')?.value ?? '',
+    };
+  }
+  return getBatchReplaceOptions();
 }
 
 function getCleanupOptions() {
@@ -2149,6 +2504,11 @@ function undoCleanupRecord(recordIndex) {
  */
 function commitBatchChanges(before, after, statusEl, panel, list, indices) {
   state.marcRecords.splice(0, state.marcRecords.length, ...after);
+  indices.forEach((index) => {
+    normalizeMarcRecord(state.marcRecords[index]);
+    state.parsedRows[index] = recordToParsedRow(state.marcRecords[index]);
+  });
+
   const summaries = diffScopedRecords(before, after, indices);
 
   if (summaries.length === 0) {
@@ -2159,11 +2519,14 @@ function commitBatchChanges(before, after, statusEl, panel, list, indices) {
     statusEl.textContent = 'No changes detected.';
   } else {
     batchUndoState = createUndoState(before, summaries);
-    roadmapApi?.pushUndo?.('Batch find/replace', batchUndoState.snapshots);
+    roadmapApi?.pushUndo?.('Batch edit', batchUndoState.snapshots);
     statusEl.textContent = renderChangeLog(summaries, panel, list, 'batch');
   }
 
-  refreshEditView();
+  const refreshResult = refreshRecordsAfterBulkEdit();
+  if (refreshResult instanceof Promise) {
+    refreshResult.catch(() => {});
+  }
 }
 
 /**
@@ -2208,7 +2571,14 @@ function commitCleanupChanges(beforeMap, statusEl, panel, list) {
     statusEl.textContent = renderChangeLog(summaries, panel, list, 'cleanup');
   }
 
-  refreshEditView();
+  indices.forEach((index) => {
+    state.parsedRows[index] = recordToParsedRow(state.marcRecords[index]);
+  });
+
+  const refreshResult = refreshRecordsAfterBulkEdit();
+  if (refreshResult instanceof Promise) {
+    refreshResult.catch(() => {});
+  }
 }
 
 function remapIndexAfterMove(index, fromIndex, toIndex) {
@@ -2446,6 +2816,14 @@ function isBatchSetMode(options) {
 }
 
 function applyBatchOperation(records, options, indices) {
+  if (options.mode === 'set-value') {
+    return batchSetFieldValue(records, indices, {
+      fieldPart: options.fieldPart,
+      tag: options.tagFilter,
+      subfieldCode: options.subfieldFilter,
+      value: options.replace ?? '',
+    });
+  }
   if (isBatchSetMode(options)) {
     return batchSetSubfieldValue(records, indices, options.tagFilter, options.subfieldFilter, options.replace);
   }
@@ -2453,6 +2831,23 @@ function applyBatchOperation(records, options, indices) {
 }
 
 function validateBatchOptions(options, statusEl) {
+  if (options.mode === 'set-value') {
+    if (options.fieldPart === 'leader') {
+      return true;
+    }
+    if (!options.tagFilter) {
+      statusEl.textContent = 'Enter a tag for Set field value (Leader is the only part that does not need a tag).';
+      return false;
+    }
+    if ((options.fieldPart === 'subfield-value' || options.fieldPart === 'remove-subfield') && !options.subfieldFilter) {
+      statusEl.textContent = options.fieldPart === 'remove-subfield'
+        ? 'Enter a subfield code to remove.'
+        : 'Enter a subfield code when setting a subfield value.';
+      return false;
+    }
+    return true;
+  }
+
   if (options.find.trim()) {
     return true;
   }
@@ -2661,6 +3056,19 @@ loadCustomTemplates().then((templates) => {
   syncNewRecordTemplateOptions();
 });
 
+loadDismissedWarnings().then((keys) => {
+  dismissedWarningKeys = new Set(keys);
+  if (hasRecords()) {
+    renderValidationBanner();
+    renderRecordListValidationBadges();
+  }
+});
+
+validationShowDismissed?.addEventListener('change', (event) => {
+  showDismissedWarnings = event.target.checked;
+  renderValidationBanner();
+});
+
 document.getElementById('duplicate-record').addEventListener('click', () => {
   const indicesToDuplicate = getRecordActionIndices();
   if (indicesToDuplicate.length === 0) {
@@ -2747,6 +3155,14 @@ validationBannerToggle.addEventListener('click', () => {
   validationBannerList.classList.toggle('hidden', isExpanded);
 });
 
+document.querySelectorAll('input[name="batch-operation"]').forEach((input) => {
+  input.addEventListener('change', syncBatchOperationUI);
+});
+document.getElementById('batch-set-part')?.addEventListener('change', syncBatchOperationUI);
+document.getElementById('batch-find')?.addEventListener('input', syncBatchOperationUI);
+document.addEventListener('batch-operation-sync', syncBatchOperationUI);
+syncBatchOperationUI();
+
 document.getElementById('batch-preview-btn').addEventListener('click', () => {
   const statusEl = document.getElementById('batch-status');
   const panel = document.getElementById('batch-changes');
@@ -2757,7 +3173,7 @@ document.getElementById('batch-preview-btn').addEventListener('click', () => {
     return;
   }
 
-  const options = getBatchReplaceOptions();
+  const options = getBatchOperationOptions();
   if (!validateBatchOptions(options, statusEl)) {
     return;
   }
@@ -2778,13 +3194,13 @@ document.getElementById('batch-apply-btn').addEventListener('click', () => {
     return;
   }
 
-  const options = getBatchReplaceOptions();
+  const options = getBatchOperationOptions();
   if (!validateBatchOptions(options, statusEl)) {
     return;
   }
 
   const before = cloneRecords(state.marcRecords);
-  const after = applyBatchOperation(state.marcRecords, options, indices);
+  const after = applyBatchOperation(before, options, indices);
   commitBatchChanges(before, after, statusEl, panel, list, indices);
 });
 
@@ -2799,7 +3215,7 @@ document.getElementById('batch-normalize-btn').addEventListener('click', () => {
   }
 
   const before = cloneRecords(state.marcRecords);
-  const after = batchNormalize(state.marcRecords, indices);
+  const after = batchNormalize(before, indices);
   commitBatchChanges(before, after, statusEl, panel, list, indices);
 });
 
@@ -2820,7 +3236,7 @@ document.getElementById('batch-delete-tag-btn').addEventListener('click', () => 
 
   const normalizedTag = tag.padStart(3, '0').slice(-3);
   const before = cloneRecords(state.marcRecords);
-  const after = batchDeleteTag(state.marcRecords, normalizedTag, indices);
+  const after = batchDeleteTag(before, normalizedTag, indices);
   commitBatchChanges(before, after, statusEl, panel, list, indices);
 });
 

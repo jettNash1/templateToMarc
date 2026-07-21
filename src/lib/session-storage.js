@@ -2,6 +2,7 @@ const SESSION_VERSION = 1;
 const DRAFT_STORAGE_KEY = 'marcliteDraft';
 const PRESETS_STORAGE_KEY = 'marcliteBatchPresets';
 const CUSTOM_TEMPLATES_STORAGE_KEY = 'marcliteCustomTemplates';
+const DISMISSED_WARNINGS_STORAGE_KEY = 'marcliteDismissedWarnings';
 
 /**
  * @typedef {Object} SessionPayload
@@ -203,4 +204,26 @@ export async function saveCustomTemplates(templates) {
     return;
   }
   await chrome.storage.local.set({ [CUSTOM_TEMPLATES_STORAGE_KEY]: templates });
+}
+
+/**
+ * @returns {Promise<string[]>}
+ */
+export async function loadDismissedWarnings() {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) {
+    return [];
+  }
+  const result = await chrome.storage.local.get(DISMISSED_WARNINGS_STORAGE_KEY);
+  return Array.isArray(result[DISMISSED_WARNINGS_STORAGE_KEY]) ? result[DISMISSED_WARNINGS_STORAGE_KEY] : [];
+}
+
+/**
+ * @param {string[]} keys
+ * @returns {Promise<void>}
+ */
+export async function saveDismissedWarnings(keys) {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) {
+    return;
+  }
+  await chrome.storage.local.set({ [DISMISSED_WARNINGS_STORAGE_KEY]: keys });
 }

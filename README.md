@@ -116,6 +116,19 @@ Find/replace across **all parts of a record**:
 
 Find text is matched literally by default. Patterns like `\d+`, `[A-Z]+`, or `/pattern/` are treated as regular expressions. Leave **Find** empty with **Tag** and **Subfield** set to replace the entire subfield value in scoped records (**Replace** = new value).
 
+### Set field value
+
+Use **Set field value** (instead of Find & replace) to write an exact value without knowing the current content:
+
+| Field part | Tag required | Example |
+|------------|--------------|---------|
+| **Indicators** | Yes | Tag `245`, Set to `10` or `00` |
+| **Subfield value** | Yes + subfield | Tag `650`, Subfield `a`, Set to new text |
+| **Control field value** | Yes | Tag `008`, Set to padded fixed-field value |
+| **Leader** | No | Set to full 24-character leader |
+
+Validation banner **Batch edit** on grouped warnings (e.g. 245 indicators) pre-fills scope and switches to Set field value when appropriate.
+
 - **Record scope** — all records, custom range/list (`1-75`, `1, 6, 17`), checkboxes in the Edit list, or current record only
 - **Record type filter** on scope
 - Choose update targets via checkboxes
@@ -211,6 +224,7 @@ MARCLite validates records **continuously** — on file import, blank record cre
 4. **Record list** — badges and coloured borders; checkboxes for scope
 5. **Field editor** — red/amber outlines on leader, fields, and subfields
 6. **Fix** button on auto-fixable issues in the banner
+7. **Dismiss warning** hides that warning type on **all affected records** (badges, banner, highlights). Enable **Show dismissed warnings** to review or **Restore warning**. Dismissals persist in browser storage. Errors cannot be dismissed.
 
 ---
 
@@ -302,6 +316,7 @@ MARCLite stores the following in `chrome.storage.local` (persists across browser
 | Auto-save draft | Current records and session settings |
 | Batch presets | Saved find/replace setups |
 | Custom record templates | User-saved leader/field layouts |
+| Dismissed warnings | Validation warnings the user chose to hide |
 
 Cleared only when you delete them, clear extension data, or uninstall the extension. **Save session** (`.marclite.json`) is the portable backup for records and settings; custom templates are not yet included in session files.
 

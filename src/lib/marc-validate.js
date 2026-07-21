@@ -205,10 +205,15 @@ export function validateRecord(record) {
     }
 
     field.subfields.forEach((subfield, subfieldIndex) => {
-      if (!/^[a-z0-9]$/i.test(subfield.code)) {
+      const code = String(subfield.code ?? '');
+      if (!code.trim()) {
+        return;
+      }
+
+      if (!/^[a-z0-9]$/i.test(code)) {
         issues.push({
           level: 'error',
-          message: `Invalid subfield code "${subfield.code}" in field ${field.tag}. Codes must be a single letter or digit.`,
+          message: `Invalid subfield code "${code}" in field ${field.tag}. Codes must be a single letter or digit.`,
           fieldIndex,
           subfieldIndex,
           tag: field.tag,
@@ -435,6 +440,8 @@ function enrichIssue(issue) {
     enriched.issueKey = issue.message.includes('24 characters') ? 'leader:length' : 'leader:chars';
   } else if (issue.path?.startsWith('missing:')) {
     enriched.issueKey = issue.path;
+  } else if (issue.path === 'leader-008-mismatch') {
+    enriched.issueKey = 'leader-008-mismatch';
   } else if (issue.message.startsWith('Duplicate control')) {
     enriched.issueKey = `duplicate-control:${issue.tag}`;
   } else if (issue.message.includes('Empty subfield')) {
@@ -442,6 +449,8 @@ function enrichIssue(issue) {
     enriched.subfieldCode = codeMatch?.[1] ?? undefined;
     enriched.issueKey = `empty-subfield:${issue.tag}:${enriched.subfieldCode ?? 'x'}`;
   } else if (issue.message.includes('Invalid subfield code')) {
+    const codeMatch = issue.message.match(/Invalid subfield code "([^"]*)"/);
+    enriched.subfieldCode = codeMatch?.[1] ?? undefined;
     enriched.issueKey = `invalid-subfield-code:${issue.tag}`;
   } else if (issue.message.includes('indicator 1')) {
     enriched.issueKey = `indicator1:${issue.tag}`;

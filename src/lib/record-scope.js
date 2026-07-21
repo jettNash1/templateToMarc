@@ -5,6 +5,15 @@
  */
 
 /**
+ * Normalise dash-like characters so pasted ranges like `3–72` parse correctly.
+ * @param {string} text
+ * @returns {string}
+ */
+function normalizeScopeSeparators(text) {
+  return text.replace(/[\u2013\u2014\u2212]/g, '-');
+}
+
+/**
  * @param {number[]} indices
  * @returns {string}
  */
@@ -26,12 +35,12 @@ export function formatRecordRanges(indices) {
       continue;
     }
 
-    parts.push(rangeStart === rangeEnd ? `${rangeStart + 1}` : `${rangeStart + 1}–${rangeEnd + 1}`);
+    parts.push(rangeStart === rangeEnd ? `${rangeStart + 1}` : `${rangeStart + 1}-${rangeEnd + 1}`);
     rangeStart = value;
     rangeEnd = value;
   }
 
-  parts.push(rangeStart === rangeEnd ? `${rangeStart + 1}` : `${rangeStart + 1}–${rangeEnd + 1}`);
+  parts.push(rangeStart === rangeEnd ? `${rangeStart + 1}` : `${rangeStart + 1}-${rangeEnd + 1}`);
   return parts.join(', ');
 }
 
@@ -45,7 +54,7 @@ export function parseRecordScope(text, totalRecords) {
     return { indices: [], error: 'No records loaded.' };
   }
 
-  const trimmed = text.trim();
+  const trimmed = normalizeScopeSeparators(text).trim();
   if (!trimmed) {
     return { indices: Array.from({ length: totalRecords }, (_, index) => index) };
   }
@@ -61,7 +70,7 @@ export function parseRecordScope(text, totalRecords) {
     }
 
     if (part.includes('-')) {
-      const [startText, endText] = part.split('-').map((value) => value.trim());
+      const [startText, endText] = part.split('-', 2).map((value) => value.trim());
       const start = Number(startText);
       const end = Number(endText);
 

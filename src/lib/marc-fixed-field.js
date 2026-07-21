@@ -337,14 +337,31 @@ export function normalizeMarcRecord(record) {
   const recordType = record.recordType ?? 'bibliographic';
 
   record.fields = record.fields.map((field) => {
-    if (field.type !== 'control') {
+    if (field.type === 'control') {
+      return {
+        ...field,
+        value: normalizeControlFieldValue(field.tag, field.value, recordType),
+      };
+    }
+
+    const subfields = field.subfields
+      .map((subfield) => {
+        const code = String(subfield.code ?? '').trim();
+        if (code) {
+          return subfield;
+        }
+        if (!subfield.value.trim()) {
+          return null;
+        }
+        return { ...subfield, code: 'a' };
+      })
+      .filter(Boolean);
+
+    if (subfields.length === field.subfields.length && subfields.every((subfield, index) => subfield === field.subfields[index])) {
       return field;
     }
 
-    return {
-      ...field,
-      value: normalizeControlFieldValue(field.tag, field.value, recordType),
-    };
+    return { ...field, subfields };
   });
 
   return record;

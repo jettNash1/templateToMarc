@@ -913,6 +913,57 @@ input[type='radio'] {
   display: none;
 }
 
+.validation-banner-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 1rem;
+  padding: 0.45rem 1rem 0.55rem;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.validation-banner-controls.hidden {
+  display: none;
+}
+
+.validation-show-dismissed-label {
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.validation-show-dismissed-hint {
+  font-size: 0.78rem;
+}
+
+.validation-banner-issue-actions,
+.validation-banner-group-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.validation-banner-dismiss,
+.validation-banner-restore {
+  font-size: 0.78rem;
+  padding: 0.15rem 0.45rem;
+}
+
+.validation-banner-individual.validation-banner-dismissed-item,
+.validation-banner-group.validation-banner-dismissed-item {
+  opacity: 0.72;
+}
+
+.validation-banner-dismissed-heading {
+  margin: 0.75rem 0 0.35rem;
+  padding: 0.35rem 0 0;
+  border-top: 1px dashed rgba(0, 0, 0, 0.12);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  list-style: none;
+}
+
 .validation-banner-group {
   margin-top: 0.65rem;
   border: 1px solid rgba(0, 0, 0, 0.08);
@@ -1323,6 +1374,29 @@ input[type='radio'] {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.75rem 1rem;
+}
+
+.batch-targets,
+.batch-operation-mode {
+  margin-top: 0.75rem;
+}
+
+.batch-operation-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  border: none;
+  padding: 0;
+}
+
+.batch-fields-panel.hidden {
+  display: none;
+}
+
+.batch-operation-mode legend {
+  font-weight: 600;
+  width: 100%;
+  margin-bottom: 0.25rem;
 }
 
 .batch-targets {
