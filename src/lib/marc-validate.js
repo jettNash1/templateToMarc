@@ -1,4 +1,5 @@
 import { getRecordPreview } from './marc-model.js';
+import { getField008Length } from './marc-fixed-field.js';
 import { formatRecordRanges } from './record-scope.js';
 
 /** @typedef {import('./marc-builder.js').MarcRecord} MarcRecord */
@@ -33,7 +34,6 @@ import { formatRecordRanges } from './record-scope.js';
 const CONTROL_TAG_PATTERN = /^00[1-9]$/;
 const DATA_TAG_MIN = '010';
 const DATA_TAG_MAX = '999';
-const BIB_008_LENGTH = 40;
 
 /**
  * @param {number|null} fieldIndex
@@ -67,10 +67,10 @@ export function validateRecord(record) {
       fieldIndex: null,
       path: 'leader',
     });
-  } else if (!/^[0-9A-Za-z ]{24}$/.test(record.leader)) {
+  } else if (!/^[0-9A-Za-z #|]{24}$/.test(record.leader)) {
     issues.push({
       level: 'warning',
-      message: 'Leader contains unusual characters; MARC leaders are typically alphanumeric or space.',
+      message: 'Leader contains unusual characters; MARC leaders are typically alphanumeric, space, #, or |.',
       fieldIndex: null,
       path: 'leader',
     });
@@ -121,10 +121,11 @@ export function validateRecord(record) {
         });
       }
 
-      if (field.tag === '008' && recordType === 'bibliographic' && field.value.length !== BIB_008_LENGTH) {
+      const expected008Length = getField008Length(recordType);
+      if (field.tag === '008' && field.value.length !== expected008Length) {
         issues.push({
           level: 'warning',
-          message: `Control field 008 is usually ${BIB_008_LENGTH} characters for bibliographic records (currently ${field.value.length}).`,
+          message: `Control field 008 must be ${expected008Length} characters for ${recordType} records (currently ${field.value.length}).`,
           fieldIndex,
           tag: '008',
           path: fieldPath(fieldIndex, null, 'value'),
@@ -232,7 +233,7 @@ export function validateRecord(record) {
         message: 'Field 245 (title) often uses indicators 00 or 10.',
         fieldIndex,
         tag: '245',
-        path: fieldPath(fieldIndex),
+        path: fieldPath(fieldIndex, null, 'indicators'),
       });
     }
   });

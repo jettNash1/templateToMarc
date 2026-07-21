@@ -1,5 +1,5 @@
 import { inferFieldGroup } from './header-parser.js';
-
+import { inferRecordTypeFromLeader, normalizeMarcRecord, padFixedField, sanitizeMarcControlValue } from './marc-fixed-field.js';
 /** @typedef {import('./marc-builder.js').MarcRecord} MarcRecord */
 /** @typedef {import('./marc-builder.js').MarcField} MarcField */
 
@@ -14,13 +14,13 @@ const SUBFIELD_DELIMITER = '\x1f';
  * @returns {MarcRecord}
  */
 function buildRecord(leader, fields, rowNumber) {
-  return {
-    recordType: 'bibliographic',
-    leader: leader.padEnd(24, ' ').slice(0, 24),
+  return normalizeMarcRecord({
+    recordType: inferRecordTypeFromLeader(leader),
+    leader: padFixedField(leader, 24),
     fields,
     sourceRowNumber: rowNumber,
     sourceValues: {},
-  };
+  });
 }
 
 /**
@@ -62,7 +62,7 @@ export function parseMarcBinary(buffer) {
  */
 function parseSingleBinaryRecord(chunk) {
   const text = new TextDecoder('utf-8', { fatal: false }).decode(chunk);
-  const leader = text.slice(0, 24);
+  const leader = sanitizeMarcControlValue(text.slice(0, 24));
   const baseAddress = Number.parseInt(leader.slice(12, 17), 10);
 
   if (Number.isNaN(baseAddress) || baseAddress >= text.length) {
@@ -117,7 +117,7 @@ function parseSingleBinaryRecord(chunk) {
       fields.push({
         type: 'control',
         tag,
-        value: fieldBody,
+        value: sanitizeMarcControlValue(fieldBody),
         group: 'Control',
       });
     }
@@ -177,7 +177,7 @@ function parseMnemonicChunk(chunk) {
 
     const body = line.slice(1);
     if (body.startsWith('LDR') || body.startsWith('000')) {
-      leader = body.replace(/^LDR\s+/, '').replace(/^000\s+/, '').slice(0, 24);
+      leader = sanitizeMarcControlValue(body.replace(/^LDR\s+/, '').replace(/^000\s+/, '')).slice(0, 24);
       continue;
     }
 
@@ -190,7 +190,7 @@ function parseMnemonicChunk(chunk) {
     const remainder = tagMatch[2].trim();
 
     if (tag < '010') {
-      fields.push({ type: 'control', tag, value: remainder, group: 'Control' });
+      fields.push({ type: 'control', tag, value: sanitizeMarcControlValue(remainder), group: 'Control' });
       continue;
     }
 
@@ -237,7 +237,7 @@ export function parseMarcXml(xmlText) {
   const records = [];
 
   recordNodes.forEach((node, index) => {
-    const leader = node.querySelector('leader')?.textContent?.trim() ?? '00000nam a2200000 i 4500';
+    const leader = sanitizeMarcControlValue(node.querySelector('leader')?.textContent?.trim() ?? '00000nam a2200000 i 4500');
     /** @type {MarcField[]} */
     const fields = [];
 
@@ -246,7 +246,7 @@ export function parseMarcXml(xmlText) {
       fields.push({
         type: 'control',
         tag,
-        value: control.textContent ?? '',
+        value: sanitizeMarcControlValue(control.textContent ?? ''),
         group: 'Control',
       });
     });

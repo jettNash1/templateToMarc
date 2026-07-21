@@ -27,6 +27,7 @@
       <button type="button" class="nav-tab" data-tab="edit">Edit</button>
       <button type="button" class="nav-tab" data-tab="batch">Batch</button>
       <button type="button" class="nav-tab" data-tab="cleanup">Cleanup</button>
+      <button type="button" class="nav-tab" data-tab="help">Help</button>
     </nav>
 
     <section id="validation-banner" class="validation-banner hidden" aria-live="polite">
@@ -118,15 +119,13 @@
               <div>
                 <h2 id="editor-heading">Field editor</h2>
                 <p id="selected-record-meta" class="meta-text"></p>
+                <p id="autosave-status" class="autosave-status" role="status" aria-live="polite">Edits are saved automatically</p>
               </div>
               <div class="editor-actions">
+                <button id="save-record" type="button" class="secondary">Save record</button>
                 <button id="prev-record" type="button">Previous</button>
                 <button id="next-record" type="button">Next</button>
                 <button id="add-field" type="button">Add MARC field</button>
-                <label class="toggle">
-                  <input id="advanced-toggle" type="checkbox" />
-                  Advanced MARC view
-                </label>
               </div>
             </div>
             <div id="leader-editor" class="leader-editor"></div>
@@ -254,6 +253,136 @@
           </section>
         </section>
       </section>
+
+      <section id="tab-help" class="tab-panel" aria-labelledby="help-heading">
+        <section class="panel help-panel">
+          <h2 id="help-heading">Help &amp; tutorial</h2>
+          <p class="meta-text">A walkthrough of each area of MARCLite. Everything runs locally in your browser — no records leave your machine.</p>
+
+          <nav class="help-toc" aria-label="Help contents">
+            <a href="#help-convert">Convert</a>
+            <a href="#help-edit">Edit</a>
+            <a href="#help-leader-008">Leader &amp; 008</a>
+            <a href="#help-indicators">Indicators &amp; field tags</a>
+            <a href="#help-validation">Validation</a>
+            <a href="#help-batch">Batch</a>
+            <a href="#help-cleanup">Cleanup</a>
+            <a href="#help-export">Export</a>
+          </nav>
+
+          <details id="help-convert" class="help-section" open>
+            <summary>Convert — importing files</summary>
+            <div class="help-section-body">
+              <p>Upload a file on the <strong>Convert</strong> tab by dropping it on the upload zone or clicking to browse. The format is detected from the file extension:</p>
+              <ul>
+                <li><strong>Spreadsheets</strong> (.csv, .xlsx, .xls) — row 1 must contain MARC notation headers such as <code>245//$a</code> (title), <code>1001/$a</code> (author), or <code>650/0$a</code> (subject). Each following row becomes one record. Columns without MARC notation are skipped and listed under "Column mapping".</li>
+                <li><strong>MARC files</strong> (.mrc, .mrk, .xml, .txt) — opened directly. The record type (bibliographic, authority, holdings) is detected from the Leader, and fixed fields are padded to their correct MARC21 lengths.</li>
+              </ul>
+              <p>After a successful import you are taken to the Edit tab automatically. A "Download example spreadsheet" link on the Convert tab shows the expected header layout.</p>
+            </div>
+          </details>
+
+          <details id="help-edit" class="help-section">
+            <summary>Edit — records and fields</summary>
+            <div class="help-section-body">
+              <p>The Edit tab has two panels:</p>
+              <ul>
+                <li><strong>Records list</strong> (left) — click a record to open it. Use the <strong>Filter</strong> dropdown to show only bibliographic, authority, or holdings records. <strong>Duplicate</strong> copies the selected records (with Undo), and <strong>Delete</strong> removes them after confirmation. The checkboxes select records for Batch and Cleanup operations ("Select all" / "Clear selection").</li>
+                <li><strong>Field editor</strong> (right) — edit the open record. <strong>Save record</strong> normalizes and re-validates; other edits save automatically. <strong>Previous/Next</strong> steps through records. <strong>Add MARC field</strong> opens a dialog for adding a data field (tag, indicators, subfields) or a control field (tag, value). Each field card has a <strong>Remove</strong> button; data fields also have <strong>Add subfield</strong>.</li>
+              </ul>
+              <p><strong>New blank record</strong> at the top creates a record from a template — choose bibliographic, authority, or holdings with the Record type dropdown first.</p>
+              <p>The <strong>MARC21 preview</strong> below the editor updates live as you type.</p>
+            </div>
+          </details>
+
+          <details id="help-leader-008" class="help-section">
+            <summary>Leader &amp; 008 — segmented fixed fields</summary>
+            <div class="help-section-body">
+              <p>The <strong>Leader</strong> (24 characters) and <strong>field 008</strong> (40 characters for bibliographic and authority records, 32 for holdings) are fixed-position fields. MARCLite splits them into labelled segment inputs matching the Library of Congress MARC21 positions — for example the 008 publication year sits in positions 07–10 and language in 35–37.</p>
+              <ul>
+                <li>Hover a segment to see a tooltip explaining its codes.</li>
+                <li>The combined value is shown beneath the segments and updates as you type.</li>
+                <li>A link under each editor opens the relevant LoC documentation page.</li>
+                <li>Short values are padded with spaces automatically; imported fields are aligned to the correct positions on load.</li>
+              </ul>
+              <p>Other control fields (001 record identifier, 005 timestamp) are free-form and use a single value input.</p>
+            </div>
+          </details>
+
+          <details id="help-indicators" class="help-section">
+            <summary>Indicators &amp; field tags</summary>
+            <div class="help-section-body">
+              <p>Each data field card shows a <strong>Tag</strong> input (three digits) and an <strong>Indicators (2 chars)</strong> input. Enter indicators together, e.g. <code>10</code> or <code>00</code>.</p>
+              <p>Common example — the 245 title field:</p>
+              <ul>
+                <li><strong>First character</strong>: <code>1</code> when the record has a main author entry (1XX field), <code>0</code> when it does not.</li>
+                <li><strong>Second character</strong>: number of characters to skip when sorting — e.g. <code>4</code> for a title starting with "The ".</li>
+              </ul>
+              <p>Edits save automatically as you type; use <strong>Save record</strong> to normalize and re-validate the open record. You can also change tags or indicators across many records from the <strong>Batch</strong> tab.</p>
+            </div>
+          </details>
+
+          <details id="help-validation" class="help-section">
+            <summary>Validation — finding and fixing issues</summary>
+            <div class="help-section-body">
+              <p>Records are validated continuously — on import, creation, and every edit. Results appear in the banner beneath the navigation tabs:</p>
+              <ul>
+                <li><strong>Red</strong> issues are errors (structurally invalid MARC); <strong>amber</strong> issues are warnings (unusual but legal).</li>
+                <li>Click the banner to expand the full list. Issues affecting several records are grouped with a record range.</li>
+                <li>Every issue includes a <strong>"How to fix"</strong> hint explaining where in the tool to correct it.</li>
+                <li>Click an issue to jump directly to the affected record and field, which is highlighted and focused.</li>
+                <li>Grouped issues offer a <strong>Batch edit</strong> button that pre-fills the Batch tab with the right scope and targets.</li>
+              </ul>
+              <p>Invalid inputs are outlined in red (errors) or amber (warnings) inside the field editor as you type.</p>
+            </div>
+          </details>
+
+          <details id="help-batch" class="help-section">
+            <summary>Batch — bulk find &amp; replace</summary>
+            <div class="help-section-body">
+              <p>The Batch tab applies changes to many records at once.</p>
+              <ul>
+                <li><strong>Record scope</strong> — all records, a custom range (e.g. <code>1-75</code> or <code>1, 6, 17</code>), or the current record. You can also tick record checkboxes on the Edit tab.</li>
+                <li><strong>Find/Replace</strong> — matched literally by default; patterns like <code>\d+</code> or <code>/pattern/</code> are detected as regular expressions automatically.</li>
+                <li><strong>Tag and subfield filters</strong> — restrict the operation, e.g. tag <code>650</code> subfield <code>a</code>.</li>
+                <li><strong>Update targets</strong> — choose what to touch: leader, control values/tags, indicators, subfield codes/values.</li>
+                <li><strong>Preview changes</strong> shows the diff before applying; <strong>Undo all</strong> reverts an applied batch.</li>
+              </ul>
+              <p><strong>Normalize all records</strong> tidies common issues, and <strong>Delete tag from all</strong> strips a field from every scoped record.</p>
+            </div>
+          </details>
+
+          <details id="help-cleanup" class="help-section">
+            <summary>Cleanup — standardising data</summary>
+            <div class="help-section-body">
+              <p>The Cleanup tab fixes common metadata problems in the scoped records. Toggle which fixes run:</p>
+              <ul>
+                <li><strong>Remove duplicate fields</strong> — identical repeated fields are dropped.</li>
+                <li><strong>Standardize punctuation</strong> — trailing punctuation follows MARC conventions.</li>
+                <li><strong>Fix encoding</strong> — repairs common character-encoding damage.</li>
+                <li><strong>Normalize ISBNs</strong> — strips hyphens and stray text from 020 fields.</li>
+                <li><strong>Normalize dates</strong> — standardises date formats.</li>
+              </ul>
+              <p>Use <strong>Preview cleanup</strong> to see the changes first; <strong>Undo all</strong> reverts an applied cleanup.</p>
+            </div>
+          </details>
+
+          <details id="help-export" class="help-section">
+            <summary>Export — saving your records</summary>
+            <div class="help-section-body">
+              <p>The Export panel lives at the bottom of the Edit tab. Choose a format and select <strong>Export records</strong>:</p>
+              <ul>
+                <li><strong>MARC mnemonic (.mrk)</strong> — human-readable text, compatible with MarcEdit.</li>
+                <li><strong>MARC binary (.mrc)</strong> — the standard ILS interchange format.</li>
+                <li><strong>MARCXML (.xml)</strong> — the LoC XML schema.</li>
+                <li><strong>CSV / JSON</strong> — delimited or structured data for spreadsheets and scripts.</li>
+                <li><strong>Dublin Core / MODS / BIBFRAME</strong> — converted metadata formats.</li>
+              </ul>
+              <p>The <strong>Export preview</strong> shows a live sample of the output. Tick <strong>"Block export on validation errors"</strong> to prevent exporting records with structural problems. Exports always include all loaded records.</p>
+            </div>
+          </details>
+        </section>
+      </section>
     </main>
 
     <div id="add-field-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="add-field-title">
@@ -269,8 +398,7 @@
           <label class="modal-label">Tag<input id="add-field-tag" type="text" maxlength="3" required placeholder="245" /></label>
           <div id="add-field-data-options">
             <div class="field-grid">
-              <label class="modal-label">Ind1<input id="add-field-ind1" type="text" maxlength="1" /></label>
-              <label class="modal-label">Ind2<input id="add-field-ind2" type="text" maxlength="1" /></label>
+              <label class="modal-label">Indicators (2 chars)<input id="add-field-indicators" type="text" maxlength="2" placeholder="10" aria-label="Field indicators (two characters)" /></label>
             </div>
             <div id="add-field-subfields" class="subfield-list"></div>
             <button id="add-modal-subfield" type="button" class="secondary">Add subfield</button>

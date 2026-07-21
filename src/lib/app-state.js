@@ -15,7 +15,6 @@ import { allRecordIndices } from './record-scope.js';
  * @property {ColumnSchema[]} columnSchema
  * @property {import('./header-parser.js').HeaderParseResult['skipped']} skippedColumns
  * @property {number} selectedIndex
- * @property {boolean} advancedView
  * @property {'bibliographic'|'authority'|'holdings'} defaultRecordType
  * @property {RecordScopeMode} recordScopeMode
  * @property {Set<number>} scopedRecordIndices
@@ -28,7 +27,6 @@ const state = {
   columnSchema: [],
   skippedColumns: [],
   selectedIndex: 0,
-  advancedView: false,
   defaultRecordType: 'bibliographic',
   recordScopeMode: 'custom',
   scopedRecordIndices: new Set(),

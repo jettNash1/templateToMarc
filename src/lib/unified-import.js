@@ -51,7 +51,7 @@ export async function importUploadedFile(buffer, filename) {
     return {
       columnSchema: result.columnSchema,
       skippedColumns: result.skippedColumns,
-      parsedRows: result.rows,
+      parsedRows: result.parsedRows,
     };
   }
 

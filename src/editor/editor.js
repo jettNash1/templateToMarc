@@ -31,14 +31,14 @@ import {
   setRecordScopeMode,
   toggleScopedRecord,
 } from '../lib/app-state.js';
-import { parseRecordScope, formatRecordRanges, allRecordIndices } from '../lib/record-scope.js';
+import { formatRecordRanges, parseRecordScope } from '../lib/record-scope.js';
+import { buildDefault008, createFixedFieldEditor, getLeaderDefinition, getField008Definition, normalizeControlFieldValue, normalizeMarcRecord, normalizeMarcRecords, padFixedField, shouldUseSegmentedFixedField } from '../lib/marc-fixed-field.js';
 
 /** @typedef {import('../lib/marc-builder.js').MarcRecord} MarcRecord */
 /** @typedef {import('../lib/marc-builder.js').MarcField} MarcField */
 /** @typedef {import('../lib/marc-builder.js').MarcDataField} MarcDataField */
 
 const state = getState();
-let advancedView = false;
 
 /** @type {'all'|'bibliographic'|'authority'|'holdings'} */
 let recordListFilter = 'all';
@@ -81,15 +81,13 @@ const validationBanner = document.getElementById('validation-banner');
 const validationBannerToggle = document.getElementById('validation-banner-toggle');
 const validationBannerSummary = document.getElementById('validation-banner-summary');
 const validationBannerList = document.getElementById('validation-banner-list');
-const advancedToggle = document.getElementById('advanced-toggle');
 const exportFormat = document.getElementById('export-format');
 const exportPreview = document.getElementById('export-preview');
 const blockInvalidExport = document.getElementById('block-invalid-export');
 const addFieldModal = document.getElementById('add-field-modal');
 const addFieldForm = document.getElementById('add-field-form');
 const addFieldTagInput = document.getElementById('add-field-tag');
-const addFieldInd1Input = document.getElementById('add-field-ind1');
-const addFieldInd2Input = document.getElementById('add-field-ind2');
+const addFieldIndicatorsInput = document.getElementById('add-field-indicators');
 const addFieldDataOptions = document.getElementById('add-field-data-options');
 const addFieldControlOptions = document.getElementById('add-field-control-options');
 const addFieldControlValueInput = document.getElementById('add-field-control-value');
@@ -114,6 +112,16 @@ navTabs.forEach((tab) => {
   tab.addEventListener('click', () => switchTab(tab.dataset.tab ?? 'convert'));
 });
 
+document.querySelectorAll('.help-toc a').forEach((link) => {
+  link.addEventListener('click', () => {
+    const targetId = link.getAttribute('href');
+    const target = targetId ? document.querySelector(targetId) : null;
+    if (target instanceof HTMLDetailsElement) {
+      target.open = true;
+    }
+  });
+});
+
 function setStatus(message, isError = false) {
   uploadStatus.textContent = message;
   uploadStatus.classList.toggle('error', isError);
@@ -121,7 +129,9 @@ function setStatus(message, isError = false) {
 
 function loadImportResult(result, filename) {
   const parsedRows = result.parsedRows ?? result.rows ?? [];
-  const records = result.records ?? buildMarcRecords(parsedRows, result.columnSchema).map(cloneMarcRecord);
+  const records = normalizeMarcRecords(
+    (result.records ?? buildMarcRecords(parsedRows, result.columnSchema).map(cloneMarcRecord)),
+  );
 
   patchState({
     columnSchema: result.columnSchema,
@@ -350,6 +360,7 @@ function selectRecord(index) {
   }
   renderRecordList();
   renderEditor(state.marcRecords[index]);
+  refreshValidationUI();
 }
 
 /**
@@ -395,6 +406,51 @@ function handleRecordListFilterChange() {
 function getFieldGroup(field) {
   if (field.type === 'control') return 'Control';
   return field.group ?? inferFieldGroup(field.tag);
+}
+
+/**
+ * MARC indicators are two single-character positions shown together as "10", "00", etc.
+ * @param {string} ind1
+ * @param {string} ind2
+ * @returns {string}
+ */
+function formatMarcIndicators(ind1, ind2) {
+  return `${(ind1 || ' ').slice(0, 1)}${(ind2 || ' ').slice(0, 1)}`;
+}
+
+/**
+ * Show blank indicators as an empty field so the input is editable without selecting first.
+ * @param {string} ind1
+ * @param {string} ind2
+ * @returns {string}
+ */
+function formatMarcIndicatorsForDisplay(ind1, ind2) {
+  const pair = formatMarcIndicators(ind1, ind2);
+  if (/^\s*$/.test(pair)) {
+    return '';
+  }
+  return pair.trimEnd();
+}
+
+/**
+ * @param {MarcDataField} field
+ * @param {string} text
+ */
+function applyMarcIndicators(field, text) {
+  const normalized = String(text ?? '').padEnd(2, ' ').slice(0, 2);
+  field.ind1 = normalized.charAt(0);
+  field.ind2 = normalized.charAt(1);
+}
+
+/**
+ * Persist the current in-memory record, refresh validation, preview, and list badges.
+ * @param {MarcRecord} record
+ */
+function commitRecordChange(record) {
+  normalizeMarcRecord(record);
+  marcPreview.textContent = recordToMarcText(record);
+  refreshExportPreview();
+  refreshValidationUI();
 }
 
 function getHighestIssueLevel(issues) {
@@ -855,12 +911,63 @@ function navigateToIssue(issue) {
         if (issue.subfieldIndex != null) {
           const subfieldRow = fieldCard.querySelector(`[data-subfield-index="${issue.subfieldIndex}"]`);
           subfieldRow?.querySelector('input')?.focus();
+        } else if (issue.path?.includes('indicators')) {
+          fieldCard.querySelector('.field-indicators-input')?.focus();
+        } else if (issue.path?.includes('tag')) {
+          fieldCard.querySelector('.field-tag-input')?.focus();
         } else {
           fieldCard.querySelector('input')?.focus();
         }
       }
     }
   });
+}
+
+/**
+ * @param {string} issueKey
+ * @returns {string}
+ */
+function getIssueFixHint(issueKey) {
+  if (issueKey.startsWith('indicator') || issueKey === '245-indicators') {
+    return 'How to fix: edit the Indicators field on the field card (two characters, e.g. 10 or 00), or use the Batch tab with the Indicators target.';
+  }
+  if (issueKey.startsWith('leader')) {
+    return 'How to fix: edit the Leader segments at the top of the field editor (Edit tab).';
+  }
+  if (issueKey === '008-length') {
+    return 'How to fix: edit the 008 segment inputs on its field card in the field editor.';
+  }
+  if (issueKey === 'empty-001' || issueKey.startsWith('empty-control')) {
+    return 'How to fix: type a value into the control field\u2019s Value input in the field editor.';
+  }
+  if (issueKey.startsWith('empty-subfield')) {
+    return 'How to fix: fill in the empty subfield value on the field card, or remove the subfield with its Remove button.';
+  }
+  if (issueKey.startsWith('invalid-subfield-code')) {
+    return 'How to fix: correct the Code input (single letter or digit) next to the subfield value on the field card.';
+  }
+  if (issueKey.startsWith('duplicate-control')) {
+    return 'How to fix: remove the duplicate field using the Remove button on its field card.';
+  }
+  if (issueKey.startsWith('no-subfields')) {
+    return 'How to fix: select the field card and use "Add subfield" to give the field at least one subfield.';
+  }
+  if (issueKey.startsWith('invalid-control-tag') || issueKey.startsWith('invalid-data-tag')) {
+    return 'How to fix: edit the Tag input on the field card (three digits), or use the Batch tab with the Control tags target.';
+  }
+  if (issueKey === 'missing:245:a' || issueKey === 'missing:245$a') {
+    return 'How to fix: use "Add MARC field" in the field editor to add a 245 data field with a $a (title) subfield.';
+  }
+  if (issueKey === 'missing:heading') {
+    return 'How to fix: use "Add MARC field" to add a heading field (100/110/111/130/150/151) with a $a subfield.';
+  }
+  if (issueKey === 'missing:852') {
+    return 'How to fix: use "Add MARC field" to add an 852 data field with location information.';
+  }
+  if (issueKey.startsWith('missing:')) {
+    return 'How to fix: use "Add MARC field" in the field editor and choose "Control field" to add the missing field.';
+  }
+  return 'How to fix: open the record in the Edit tab \u2014 click the issue to jump straight to the affected field.';
 }
 
 function renderValidationBanner() {
@@ -885,6 +992,12 @@ function renderValidationBanner() {
     validationBannerSummary.textContent = `${warnings} validation warning${warnings === 1 ? '' : 's'}${filterSuffix} — select to view details`;
   }
 
+  const openGroupKeys = new Set(
+    [...validationBannerList.querySelectorAll('.validation-banner-group[open]')].map(
+      (element) => element.dataset.groupKey,
+    ),
+  );
+
   validationBannerList.innerHTML = '';
 
   const { groups, individuals } = groupValidationIssues(visibleIssues);
@@ -892,6 +1005,8 @@ function renderValidationBanner() {
   groups.forEach((group) => {
     const details = document.createElement('details');
     details.className = 'validation-banner-group';
+    details.dataset.groupKey = `${group.level}|${group.issueKey}`;
+    details.open = openGroupKeys.has(details.dataset.groupKey);
 
     const summary = document.createElement('summary');
     summary.className = 'validation-banner-group-summary';
@@ -901,6 +1016,11 @@ function renderValidationBanner() {
 
     const body = document.createElement('div');
     body.className = 'validation-banner-group-body';
+
+    const fixHint = document.createElement('p');
+    fixHint.className = 'validation-fix-hint';
+    fixHint.textContent = getIssueFixHint(group.issueKey ?? '');
+    body.append(fixHint);
 
     const recordLinks = document.createElement('ul');
     recordLinks.className = 'validation-banner-group-records';
@@ -952,6 +1072,12 @@ function renderValidationBanner() {
     button.textContent = `${recordLabel} · ${issue.level === 'error' ? 'Error' : 'Warning'}:${location} ${issue.message}`;
     button.addEventListener('click', () => navigateToIssue(issue));
     item.append(button);
+
+    const fixHint = document.createElement('p');
+    fixHint.className = 'validation-fix-hint';
+    fixHint.textContent = getIssueFixHint(issue.issueKey ?? '');
+    item.append(fixHint);
+
     validationBannerList.append(item);
   });
 }
@@ -965,9 +1091,12 @@ function applyValidationHighlights(recordIndex) {
   if (leaderGroup) {
     leaderGroup.classList.toggle('validation-highlight-error', leaderLevel === 'error');
     leaderGroup.classList.toggle('validation-highlight-warning', leaderLevel === 'warning');
-    const leaderInput = leaderGroup.querySelector('.leader-input');
-    leaderInput?.classList.toggle('input-invalid', leaderIssues.some((issue) => issue.path === 'leader' && issue.level === 'error'));
-    leaderInput?.classList.toggle('input-warning', leaderIssues.some((issue) => issue.path === 'leader' && issue.level === 'warning'));
+    const hasLeaderError = leaderIssues.some((issue) => issue.path === 'leader' && issue.level === 'error');
+    const hasLeaderWarning = leaderIssues.some((issue) => issue.path === 'leader' && issue.level === 'warning');
+    leaderGroup.querySelectorAll('.leader-input').forEach((leaderInput) => {
+      leaderInput.classList.toggle('input-invalid', hasLeaderError);
+      leaderInput.classList.toggle('input-warning', hasLeaderWarning);
+    });
   }
 
   fieldEditor.querySelectorAll('.field-card').forEach((card) => {
@@ -1003,13 +1132,37 @@ function applyValidationHighlights(recordIndex) {
       }
       const part = input.dataset.validationPart;
       const partIssues = fieldIssues.filter((issue) => {
-        if (!part) return true;
+        if (!part) {
+          return true;
+        }
+        if (part === 'indicators') {
+          return issue.path?.includes('indicators')
+            || issue.path?.includes('ind1')
+            || issue.path?.includes('ind2')
+            || issue.message.includes('indicator');
+        }
         return issue.path?.includes(part);
       });
       input.classList.toggle('input-invalid', partIssues.some((issue) => issue.level === 'error'));
       input.classList.toggle('input-warning', partIssues.some((issue) => issue.level === 'warning'));
     });
   });
+}
+
+const autosaveStatus = document.getElementById('autosave-status');
+let autosaveFlashTimer = null;
+
+function flashAutosaveStatus() {
+  if (!autosaveStatus) {
+    return;
+  }
+  autosaveStatus.textContent = 'Changes saved';
+  autosaveStatus.classList.add('autosave-status-active');
+  clearTimeout(autosaveFlashTimer);
+  autosaveFlashTimer = setTimeout(() => {
+    autosaveStatus.classList.remove('autosave-status-active');
+    autosaveStatus.textContent = 'Edits are saved automatically';
+  }, 1500);
 }
 
 function refreshValidationUI() {
@@ -1023,6 +1176,7 @@ function refreshValidationUI() {
   renderValidationBanner();
   renderRecordListValidationBadges();
   applyValidationHighlights(state.selectedIndex);
+  flashAutosaveStatus();
 }
 
 function renderRecordListValidationBadges() {
@@ -1035,23 +1189,29 @@ function renderRecordListValidationBadges() {
     const recordIssues = getRecordIssues(allValidationIssues, index);
     const errorCount = recordIssues.filter((issue) => issue.level === 'error').length;
     const warningCount = recordIssues.filter((issue) => issue.level === 'warning').length;
-    const badge = item.querySelector('.record-validation-badge');
 
     item.classList.toggle('record-item-has-errors', errorCount > 0);
     item.classList.toggle('record-item-has-warnings', errorCount === 0 && warningCount > 0);
 
-    if (badge) {
-      if (errorCount > 0) {
-        badge.className = 'record-validation-badge error';
-        badge.textContent = String(errorCount);
-        badge.setAttribute('aria-label', `${errorCount} validation errors`);
-      } else if (warningCount > 0) {
-        badge.className = 'record-validation-badge warning';
-        badge.textContent = String(warningCount);
-        badge.setAttribute('aria-label', `${warningCount} validation warnings`);
-      } else {
-        badge.remove();
-      }
+    if (errorCount === 0 && warningCount === 0) {
+      item.querySelector('.record-validation-badge')?.remove();
+      return;
+    }
+
+    let badge = item.querySelector('.record-validation-badge');
+    if (!badge) {
+      badge = document.createElement('span');
+      item.querySelector('.record-item-title')?.append(badge);
+    }
+
+    if (errorCount > 0) {
+      badge.className = 'record-validation-badge error';
+      badge.textContent = String(errorCount);
+      badge.setAttribute('aria-label', `${errorCount} validation errors`);
+    } else {
+      badge.className = 'record-validation-badge warning';
+      badge.textContent = String(warningCount);
+      badge.setAttribute('aria-label', `${warningCount} validation warnings`);
     }
   });
 }
@@ -1077,10 +1237,50 @@ function renderEditor(record) {
   applyValidationHighlights(state.selectedIndex);
 }
 
+function createPlainFixedValueInput({
+  value,
+  maxLength,
+  labelText,
+  inputClass,
+  validationPart,
+  valueIssues,
+  onChange,
+}) {
+  const controlLabel = document.createElement('label');
+  controlLabel.className = 'control-field-label';
+  controlLabel.textContent = labelText;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = inputClass;
+  input.value = value;
+  if (maxLength !== undefined) {
+    input.maxLength = maxLength;
+  }
+  input.dataset.validationPart = validationPart;
+  input.classList.toggle('input-invalid', valueIssues.some((issue) => issue.level === 'error'));
+  input.classList.toggle('input-warning', valueIssues.some((issue) => issue.level === 'warning'));
+  input.addEventListener('input', (event) => {
+    onChange(event.target.value);
+  });
+  input.addEventListener('blur', (event) => {
+    if (maxLength === undefined) {
+      return;
+    }
+    const padded = padFixedField(event.target.value, maxLength);
+    event.target.value = padded;
+    onChange(padded);
+  });
+
+  controlLabel.append(input);
+  return controlLabel;
+}
+
 function renderLeader(record, recordIndex) {
   const recordIssues = getRecordIssues(allValidationIssues, recordIndex);
   const leaderIssues = getIssuesForLeader(recordIssues);
   const leaderLevel = getHighestIssueLevel(leaderIssues);
+  const recordType = record.recordType ?? 'bibliographic';
 
   leaderEditor.innerHTML = '';
   const group = document.createElement('section');
@@ -1091,29 +1291,112 @@ function renderLeader(record, recordIndex) {
     group.classList.add('validation-highlight-warning');
   }
   group.innerHTML = '<h3 class="field-group-title">Leader</h3>';
-  const label = document.createElement('label');
-  label.textContent = 'LDR';
+
+  const commitLeader = (value) => {
+    record.leader = padFixedField(value, 24);
+    commitRecordChange(record);
+  };
+
+  const definition = getLeaderDefinition(recordType);
+  group.append(createFixedFieldEditor({
+    definition,
+    value: record.leader,
+    fieldLabel: 'LDR — 24 character fixed field (positions defined by LoC MARC21)',
+    inputClass: 'leader-input',
+    isInvalid: leaderLevel === 'error',
+    isWarning: leaderLevel === 'warning',
+    onChange: commitLeader,
+  }));
+
+  leaderEditor.append(group);
+}
+
+function createDataFieldControlsRow(field, fieldIndex, fieldIssues, record) {
+  const indicatorIssues = fieldIssues.filter(
+    (issue) => issue.path?.includes('indicators') || issue.message.includes('indicator'),
+  );
+  const tagIssues = fieldIssues.filter((issue) => issue.path?.includes('tag'));
+  const tagInputId = `field-${fieldIndex}-tag`;
+  const indicatorsInputId = `field-${fieldIndex}-indicators`;
+  const row = document.createElement('div');
+  row.className = 'field-data-controls-row';
+
+  const control = document.createElement('div');
+  control.className = 'field-data-controls';
+
+  const tagLabel = document.createElement('label');
+  tagLabel.className = 'field-tag-label';
+  tagLabel.setAttribute('for', tagInputId);
+  tagLabel.textContent = 'Tag';
+
+  const tagInput = document.createElement('input');
+  tagInput.type = 'text';
+  tagInput.id = tagInputId;
+  tagInput.className = 'field-input field-tag-input';
+  tagInput.maxLength = 3;
+  tagInput.inputMode = 'numeric';
+  tagInput.value = field.tag;
+  tagInput.dataset.validationPart = 'tag';
+  tagInput.setAttribute('aria-label', `Tag for field ${field.tag}`);
+  tagInput.classList.toggle('input-invalid', tagIssues.some((issue) => issue.level === 'error'));
+  tagInput.classList.toggle('input-warning', tagIssues.some((issue) => issue.level === 'warning'));
+  tagInput.addEventListener('input', (event) => {
+    field.tag = event.target.value.replace(/\D/g, '').slice(0, 3);
+    commitRecordChange(record);
+  });
+  tagInput.addEventListener('blur', (event) => {
+    field.tag = event.target.value.replace(/\D/g, '').padStart(3, '0').slice(-3);
+    event.target.value = field.tag;
+    commitRecordChange(record);
+  });
+  tagLabel.append(tagInput);
+
+  const indLabel = document.createElement('label');
+  indLabel.className = 'field-indicators-label';
+  indLabel.setAttribute('for', indicatorsInputId);
+  indLabel.textContent = 'Indicators (2 chars)';
+
   const input = document.createElement('input');
   input.type = 'text';
-  input.className = 'leader-input field-input';
-  input.value = record.leader;
-  input.maxLength = 24;
-  input.setAttribute('aria-invalid', String(leaderIssues.some((issue) => issue.level === 'error')));
-  if (leaderIssues.some((issue) => issue.path === 'leader' && issue.level === 'error')) {
-    input.classList.add('input-invalid');
-  }
-  if (leaderIssues.some((issue) => issue.path === 'leader' && issue.level === 'warning')) {
-    input.classList.add('input-warning');
-  }
-  input.addEventListener('input', (event) => {
-    record.leader = event.target.value.padEnd(24, ' ').slice(0, 24);
-    marcPreview.textContent = recordToMarcText(record);
-    refreshExportPreview();
-    refreshValidationUI();
+  input.id = indicatorsInputId;
+  input.className = 'field-input field-indicators-input';
+  input.maxLength = 2;
+  input.value = formatMarcIndicatorsForDisplay(field.ind1, field.ind2);
+  input.dataset.validationPart = 'indicators';
+  input.setAttribute('aria-label', `Indicators for field ${field.tag}`);
+  input.placeholder = '10';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.classList.toggle('input-invalid', indicatorIssues.some((issue) => issue.level === 'error'));
+  input.classList.toggle('input-warning', indicatorIssues.some((issue) => issue.level === 'warning'));
+
+  input.addEventListener('focus', (event) => {
+    requestAnimationFrame(() => {
+      event.target.select();
+    });
   });
-  label.append(input);
-  group.append(label);
-  leaderEditor.append(group);
+  input.addEventListener('input', (event) => {
+    applyMarcIndicators(field, event.target.value);
+    commitRecordChange(record);
+  });
+  input.addEventListener('blur', (event) => {
+    applyMarcIndicators(field, event.target.value);
+    event.target.value = formatMarcIndicatorsForDisplay(field.ind1, field.ind2);
+    commitRecordChange(record);
+  });
+  indLabel.append(input);
+
+  control.addEventListener('mousedown', (event) => {
+    if (event.target === tagInput || event.target === input || event.target === tagLabel || event.target === indLabel) {
+      return;
+    }
+    event.preventDefault();
+    input.focus();
+  });
+
+  control.append(tagLabel, indLabel);
+  row.append(control);
+  return row;
 }
 
 function renderFieldCard(field, fieldIndex, record, recordIndex) {
@@ -1153,52 +1436,48 @@ function renderFieldCard(field, fieldIndex, record, recordIndex) {
   card.append(header);
 
   if (field.type === 'control') {
-    const controlLabel = document.createElement('label');
-    controlLabel.textContent = `Tag ${field.tag}`;
-    const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'field-input';
-  input.value = field.value;
-    input.dataset.validationPart = 'value';
+    const recordType = record.recordType ?? 'bibliographic';
     const valueIssues = fieldIssues.filter((issue) => issue.path?.includes('value'));
-    input.classList.toggle('input-invalid', valueIssues.some((issue) => issue.level === 'error'));
-    input.classList.toggle('input-warning', valueIssues.some((issue) => issue.level === 'warning'));
-    input.addEventListener('input', (event) => {
-      field.value = event.target.value;
-      marcPreview.textContent = recordToMarcText(record);
-      refreshExportPreview();
-      refreshValidationUI();
-    });
-    controlLabel.append(input);
-    card.append(controlLabel);
+    const valueLevel = getHighestIssueLevel(valueIssues);
+
+    if (shouldUseSegmentedFixedField(record, field)) {
+      const definition = getField008Definition(recordType);
+      card.append(createFixedFieldEditor({
+        definition,
+        value: field.value,
+        fieldLabel: `008 — ${definition.totalLength} character fixed field (LoC MARC21 positions)`,
+        inputClass: 'field-input',
+        isInvalid: valueLevel === 'error',
+        isWarning: valueLevel === 'warning',
+        onChange: (value) => {
+          field.value = padFixedField(value, definition.totalLength);
+          commitRecordChange(record);
+        },
+      }));
+      return card;
+    }
+
+    const controlHint = field.tag === '005'
+      ? 'Value (yymmddhhmmss.t — date/time of latest transaction)'
+      : field.tag === '001'
+        ? 'Value (record control number)'
+        : 'Value';
+
+    card.append(createPlainFixedValueInput({
+      value: field.value,
+      labelText: controlHint,
+      inputClass: 'field-input',
+      validationPart: 'value',
+      valueIssues,
+      onChange: (value) => {
+        field.value = value;
+        commitRecordChange(record);
+      },
+    }));
     return card;
   }
 
-  if (advancedView) {
-    const grid = document.createElement('div');
-    grid.className = 'field-grid';
-    grid.append(
-      createInputField('Tag', field.tag, (value) => {
-        field.tag = value.padStart(3, '0').slice(-3);
-        marcPreview.textContent = recordToMarcText(record);
-        refreshExportPreview();
-        refreshValidationUI();
-      }, 'tag', fieldIssues),
-      createInputField('Ind1', field.ind1, (value) => {
-        field.ind1 = value.slice(0, 1) || ' ';
-        marcPreview.textContent = recordToMarcText(record);
-        refreshExportPreview();
-        refreshValidationUI();
-      }, 'ind1', fieldIssues),
-      createInputField('Ind2', field.ind2, (value) => {
-        field.ind2 = value.slice(0, 1) || ' ';
-        marcPreview.textContent = recordToMarcText(record);
-        refreshExportPreview();
-        refreshValidationUI();
-      }, 'ind2', fieldIssues),
-    );
-    card.append(grid);
-  }
+  card.append(createDataFieldControlsRow(field, fieldIndex, fieldIssues, record));
 
   const subfieldList = document.createElement('div');
   subfieldList.className = 'subfield-list';
@@ -1245,9 +1524,7 @@ function renderSubfieldRow(field, subfieldIndex, record, fieldIssues) {
   );
   codeInput.addEventListener('input', (event) => {
     subfield.code = event.target.value.slice(0, 1) || 'a';
-    marcPreview.textContent = recordToMarcText(record);
-    refreshExportPreview();
-    refreshValidationUI();
+    commitRecordChange(record);
   });
   codeLabel.append(codeInput);
 
@@ -1267,9 +1544,7 @@ function renderSubfieldRow(field, subfieldIndex, record, fieldIssues) {
   );
   valueInput.addEventListener('input', (event) => {
     subfield.value = event.target.value;
-    marcPreview.textContent = recordToMarcText(record);
-    refreshExportPreview();
-    refreshValidationUI();
+    commitRecordChange(record);
   });
   valueLabel.append(valueInput);
 
@@ -1286,22 +1561,6 @@ function renderSubfieldRow(field, subfieldIndex, record, fieldIssues) {
 
   row.append(codeLabel, valueLabel, removeButton);
   return row;
-}
-
-function createInputField(labelText, value, onChange, validationPart, fieldIssues = []) {
-  const label = document.createElement('label');
-  label.textContent = labelText;
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'field-input';
-  input.value = value;
-  input.dataset.validationPart = validationPart;
-  const partIssues = fieldIssues.filter((issue) => issue.path?.includes(validationPart));
-  input.classList.toggle('input-invalid', partIssues.some((issue) => issue.level === 'error'));
-  input.classList.toggle('input-warning', partIssues.some((issue) => issue.level === 'warning'));
-  input.addEventListener('input', (event) => onChange(event.target.value));
-  label.append(input);
-  return label;
 }
 
 function escapeHtml(value) {
@@ -1702,15 +1961,37 @@ deleteRecordsModal?.querySelectorAll('[data-close-delete-modal]').forEach((eleme
   element.addEventListener('click', closeDeleteRecordsModal);
 });
 
+document.getElementById('save-record').addEventListener('click', () => {
+  if (!hasRecords()) {
+    return;
+  }
+  const record = state.marcRecords[state.selectedIndex];
+  if (!record) {
+    return;
+  }
+  fieldEditor.querySelectorAll('.field-indicators-input').forEach((input) => {
+    const card = input.closest('.field-card');
+    const fieldIndex = Number(card?.dataset.fieldIndex);
+    const field = record.fields[fieldIndex];
+    if (field?.type === 'data') {
+      applyMarcIndicators(field, input.value);
+    }
+  });
+  fieldEditor.querySelectorAll('.field-tag-input').forEach((input) => {
+    const card = input.closest('.field-card');
+    const fieldIndex = Number(card?.dataset.fieldIndex);
+    const field = record.fields[fieldIndex];
+    if (field?.type === 'data') {
+      field.tag = input.value.replace(/\D/g, '').padStart(3, '0').slice(-3);
+    }
+  });
+  commitRecordChange(record);
+  renderEditor(record);
+});
 document.getElementById('prev-record').addEventListener('click', () => selectRelativeRecord(-1));
 document.getElementById('next-record').addEventListener('click', () => selectRelativeRecord(1));
 
 document.getElementById('record-type-filter')?.addEventListener('change', handleRecordListFilterChange);
-
-advancedToggle.addEventListener('change', (event) => {
-  advancedView = event.target.checked;
-  if (state.marcRecords[state.selectedIndex]) renderEditor(state.marcRecords[state.selectedIndex]);
-});
 
 exportFormat.addEventListener('change', () => {
   refreshExportPreview();
@@ -1937,7 +2218,13 @@ addFieldForm.addEventListener('submit', (event) => {
   const fieldType = addFieldForm.querySelector('input[name="field-type"]:checked')?.value;
 
   if (fieldType === 'control') {
-    record.fields.push(createControlField(tag, addFieldControlValueInput.value));
+    const recordType = record.recordType ?? 'bibliographic';
+    let controlValue = addFieldControlValueInput.value;
+    if (tag === '008' && !controlValue.trim()) {
+      controlValue = buildDefault008(recordType);
+    }
+    controlValue = normalizeControlFieldValue(tag, controlValue, recordType);
+    record.fields.push(createControlField(tag, controlValue, { userAdded: true }));
   } else {
     const subfields = [...addFieldSubfieldsContainer.querySelectorAll('.subfield-row')].map((row) => ({
       code: row.querySelector('.modal-subfield-code')?.value.slice(0, 1) || 'a',
@@ -1948,11 +2235,19 @@ addFieldForm.addEventListener('submit', (event) => {
       addFieldError.classList.remove('hidden');
       return;
     }
-    record.fields.push(createDataField(tag, addFieldInd1Input.value, addFieldInd2Input.value, subfields, `${tag} field`));
+    const indicators = String(addFieldIndicatorsInput?.value ?? '').padEnd(2, ' ').slice(0, 2);
+    record.fields.push(createDataField(
+      tag,
+      indicators.charAt(0),
+      indicators.charAt(1),
+      subfields,
+      `${tag} field`,
+      { userAdded: true },
+    ));
   }
 
   closeAddFieldModal();
-  refreshValidationUI();
+  commitRecordChange(record);
   renderEditor(record);
 });
 

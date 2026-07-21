@@ -11,7 +11,8 @@
 - Example spreadsheet included
 
 ### Edit
-- Grouped field editor with advanced MARC view
+- Grouped field editor with tag and indicator controls on each data field
+- **Segmented Leader and 008 editors** — fixed positions labeled per [LoC MARC21](https://www.loc.gov/marc/) with auto-padding to required length and placeholder codes (`#`, `|`, `u`)
 - Create **blank bibliographic, authority, or holdings** records
 - **Duplicate** records — duplicates scoped/selected records when checkboxes are set; otherwise duplicates the open record. Multiple or explicitly selected duplicates ask for confirmation; **Undo duplicate** removes the last copy operation.
 - **Delete** records — removes checkbox-selected records, or the open record if none are selected; confirmation modal before deletion

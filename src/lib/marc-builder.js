@@ -1,5 +1,6 @@
 import { applyPunctuation } from './punctuation.js';
 import { inferFieldGroup } from './header-parser.js';
+import { buildBibliographic008, format005Timestamp, normalizeMarcRecord } from './marc-fixed-field.js';
 import { resolveLanguageCode } from './template-mapping.js';
 
 /**
@@ -21,6 +22,7 @@ import { resolveLanguageCode } from './template-mapping.js';
  * @property {MarcSubfield[]} subfields
  * @property {string} [sourceLabel]
  * @property {string} [group]
+ * @property {boolean} [userAdded]
  */
 
 /**
@@ -29,6 +31,7 @@ import { resolveLanguageCode } from './template-mapping.js';
  * @property {string} tag
  * @property {string} value
  * @property {string} [group]
+ * @property {boolean} [userAdded]
  */
 
 /**
@@ -73,21 +76,6 @@ function formatDate(date) {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}${month}${day}`;
-}
-
-/**
- * @param {string} year
- * @param {string} place
- * @param {string} langCode
- * @returns {string}
- */
-function build008Field(year, place, langCode) {
-  const dateEntered = formatDate(new Date()).slice(2);
-  const pubYear = year.padEnd(4, 'u').slice(0, 4);
-  const placeCode = mapPlaceToCode(place);
-  const lang = langCode.padEnd(3, ' ').slice(0, 3);
-
-  return `${dateEntered}s${pubYear}${' '.repeat(3)}${placeCode}||||||||||||||||${lang} d`;
 }
 
 /**
@@ -152,12 +140,13 @@ export function buildDataFieldFromSubfields(tag, ind1, ind2, subfields, sourceLa
  * @param {string} value
  * @returns {MarcControlField}
  */
-export function createControlField(tag, value = '') {
+export function createControlField(tag, value = '', options = {}) {
   return {
     type: 'control',
     tag: tag.padStart(3, '0').slice(-3),
     value,
     group: 'Control',
+    userAdded: options.userAdded ?? false,
   };
 }
 
@@ -169,7 +158,7 @@ export function createControlField(tag, value = '') {
  * @param {string} [label]
  * @returns {MarcDataField}
  */
-export function createDataField(tag, ind1, ind2, subfields, label) {
+export function createDataField(tag, ind1, ind2, subfields, label, options = {}) {
   const normalizedTag = tag.padStart(3, '0').slice(-3);
   return {
     type: 'data',
@@ -179,6 +168,7 @@ export function createDataField(tag, ind1, ind2, subfields, label) {
     subfields: subfields.length > 0 ? subfields : [{ code: 'a', value: '' }],
     sourceLabel: label ?? `${normalizedTag} field`,
     group: inferFieldGroup(normalizedTag),
+    userAdded: options.userAdded ?? false,
   };
 }
 
@@ -325,8 +315,13 @@ export function buildMarcRecord(rowValues, rowNumber, columnSchema) {
   /** @type {MarcField[]} */
   const fields = [
     createControlField('001', controlId),
-    createControlField('005', `${formatDate(now)}000000.0`),
-    createControlField('008', build008Field(extractYear(hints.year), hints.place, langCode)),
+    createControlField('005', format005Timestamp(now)),
+    createControlField('008', buildBibliographic008({
+      year: extractYear(hints.year),
+      placeCode: mapPlaceToCode(hints.place),
+      langCode,
+      date: now,
+    })),
   ];
 
   const instanceGroups = groupColumnInstances(columnSchema, values);
@@ -362,13 +357,13 @@ export function buildMarcRecord(rowValues, rowNumber, columnSchema) {
     }
   }
 
-  return {
+  return normalizeMarcRecord({
     recordType: 'bibliographic',
     leader: DEFAULT_LEADER,
     fields,
     sourceRowNumber: rowNumber,
     sourceValues: values,
-  };
+  });
 }
 
 /**
