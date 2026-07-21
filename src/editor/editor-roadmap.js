@@ -805,6 +805,5 @@ export function initRoadmapFeatures(ctx) {
       attachDiacriticsButton(textarea);
       container.append(textarea);
     },
-    RECORD_TEMPLATES,
   };
 }
