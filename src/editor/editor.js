@@ -11,16 +11,34 @@ import { inferFieldGroup } from '../lib/header-parser.js';
 import { exportRecords, previewExport } from '../lib/marc-export.js';
 import { recordToMarcText } from '../lib/marc-export.js';
 import { createBlankRecord, getRecordPreview, recordToParsedRow } from '../lib/marc-model.js';
+import {
+  buildRecordFromTemplate,
+  createTemplateFromRecord,
+  findTemplateBySelectValue,
+  getCustomTemplatesForRecordType,
+  isCustomTemplateSelectValue,
+  toTemplateSelectValue,
+} from '../lib/record-templates.js';
 import { cleanupRecordWithOptions } from '../lib/marc-cleanup.js';
 import {
   validateAllRecords,
+  validateRecordAtIndex,
   summarizeValidation,
   getRecordIssues,
   hasValidationErrors,
   groupValidationIssues,
 } from '../lib/marc-validate.js';
-import { batchFindReplace, batchDeleteTag, batchNormalize, DEFAULT_BATCH_TARGETS } from '../lib/batch-edit.js';
+import { batchFindReplace, batchDeleteTag, batchNormalize, batchSetSubfieldValue, DEFAULT_BATCH_TARGETS } from '../lib/batch-edit.js';
 import { diffMarcRecords, summarizeChangeLog } from '../lib/marc-diff.js';
+import {
+  initRoadmapFeatures,
+  getVisibleRecordIndices as composeVisibleIndices,
+  createFieldHelpPanel,
+  attachDiacriticsButton,
+  renderVirtualRecordList,
+} from './editor-roadmap.js';
+import { initColumnMappingUI } from './column-mapping-ui.js';
+import { validateRecordsChunked } from '../lib/chunked-validation.js';
 import {
   getState,
   patchState,
@@ -32,6 +50,7 @@ import {
   toggleScopedRecord,
 } from '../lib/app-state.js';
 import { formatRecordRanges, parseRecordScope } from '../lib/record-scope.js';
+import { loadCustomTemplates, saveCustomTemplates } from '../lib/session-storage.js';
 import { buildDefault008, createFixedFieldEditor, getLeaderDefinition, getField008Definition, normalizeControlFieldValue, normalizeMarcRecord, normalizeMarcRecords, padFixedField, shouldUseSegmentedFixedField } from '../lib/marc-fixed-field.js';
 
 /** @typedef {import('../lib/marc-builder.js').MarcRecord} MarcRecord */
@@ -42,6 +61,11 @@ const state = getState();
 
 /** @type {'all'|'bibliographic'|'authority'|'holdings'} */
 let recordListFilter = 'all';
+
+let recordSearchQuery = '';
+
+/** @type {ReturnType<typeof initRoadmapFeatures>|null} */
+let roadmapApi = null;
 
 /**
  * @typedef {{ snapshots: Map<number, MarcRecord>, summaries: import('../lib/marc-diff.js').RecordChangeSummary[] }} UndoState
@@ -144,15 +168,16 @@ function loadImportResult(result, filename) {
   clearDuplicateUndo();
 
   renderMappingSummary();
-  refreshEditView();
-  const { errors, warnings } = summarizeValidation(allValidationIssues);
-  const validationNote = errors > 0
-    ? ` ${errors} validation error${errors === 1 ? '' : 's'} found.`
-    : warnings > 0
-      ? ` ${warnings} validation warning${warnings === 1 ? '' : 's'} found.`
-      : '';
-  setStatus(`Loaded ${state.marcRecords.length} record${state.marcRecords.length === 1 ? '' : 's'} from ${filename}.${validationNote}`);
-  switchTab('edit');
+  return refreshEditView().then(() => {
+    const { errors, warnings } = summarizeValidation(allValidationIssues);
+    const validationNote = errors > 0
+      ? ` ${errors} validation error${errors === 1 ? '' : 's'} found.`
+      : warnings > 0
+        ? ` ${warnings} validation warning${warnings === 1 ? '' : 's'} found.`
+        : '';
+    setStatus(`Loaded ${state.marcRecords.length} record${state.marcRecords.length === 1 ? '' : 's'} from ${filename}.${validationNote}`);
+    switchTab('edit');
+  });
 }
 
 function renderMappingSummary() {
@@ -180,17 +205,54 @@ function refreshEditView() {
     allValidationIssues = [];
     renderValidationBanner();
     refreshExportPreview();
-    return;
+    return Promise.resolve();
   }
 
   editEmpty.classList.add('hidden');
   workspace.classList.remove('hidden');
-  allValidationIssues = validateAllRecords(state.marcRecords);
-  renderRecordList();
-  renderEditor(state.marcRecords[state.selectedIndex]);
-  renderValidationBanner();
-  renderRecordListValidationBadges();
   syncScopeFieldsets();
+  populateCompareRecordSelects();
+  renderRecordOrderList();
+
+  const finishEditRefresh = () => {
+    renderRecordList();
+    renderRecordListValidationBadges();
+    renderEditor(state.marcRecords[state.selectedIndex]);
+    applyValidationHighlights(state.selectedIndex);
+    roadmapApi?.scheduleDraftSave?.();
+    roadmapApi?.updateLinkCheckButtonLabel?.();
+  };
+
+  if (state.marcRecords.length > 50) {
+    return validateAllRecordsAsync().then(finishEditRefresh);
+  }
+
+  allValidationIssues = validateAllRecords(state.marcRecords, state.validationProfile);
+  renderValidationBanner();
+  finishEditRefresh();
+  return Promise.resolve();
+}
+
+async function validateAllRecordsAsync() {
+  if (!hasRecords()) {
+    allValidationIssues = [];
+    renderValidationBanner();
+    return;
+  }
+
+  validationBannerSummary.textContent = 'Validating records…';
+  validationBanner.classList.remove('hidden');
+
+  allValidationIssues = await validateRecordsChunked(
+    state.marcRecords,
+    (record, index) => Promise.resolve(validateRecordAtIndex(record, index, state.validationProfile)),
+    25,
+    (done, total) => {
+      validationBannerSummary.textContent = `Validating records ${done}/${total}…`;
+    },
+  ).then((chunkIssues) => chunkIssues.flat());
+
+  renderValidationBanner();
 }
 
 async function refreshExportPreview() {
@@ -204,7 +266,8 @@ async function refreshExportPreview() {
   }
 
   try {
-    exportPreview.textContent = await previewExport(state.marcRecords, exportFormat.value);
+    const records = roadmapApi?.getExportRecords?.() ?? state.marcRecords;
+    exportPreview.textContent = await previewExport(records, exportFormat.value);
   } catch (error) {
     exportPreview.textContent = error instanceof Error ? error.message : 'Unable to preview export.';
   }
@@ -231,14 +294,22 @@ function getFilteredRecordIndices() {
 }
 
 /**
+ * @returns {number[]}
+ */
+function getVisibleRecordIndices() {
+  return composeVisibleIndices(
+    recordSearchQuery,
+    state.marcRecords,
+    state.parsedRows,
+    getFilteredRecordIndices(),
+  );
+}
+
+/**
  * @returns {import('../lib/marc-validate.js').ValidationIssue[]}
  */
 function getVisibleValidationIssues() {
-  if (recordListFilter === 'all') {
-    return allValidationIssues;
-  }
-
-  const visibleIndices = new Set(getFilteredRecordIndices());
+  const visibleIndices = new Set(getVisibleRecordIndices());
   return allValidationIssues.filter((issue) => visibleIndices.has(issue.recordIndex ?? -1));
 }
 
@@ -250,11 +321,59 @@ function getRecordListFilterLabel() {
   return recordListFilter.charAt(0).toUpperCase() + recordListFilter.slice(1);
 }
 
+/**
+ * @returns {string}
+ */
+function getScopeRecordTypeFilterLabel() {
+  if (state.scopeRecordTypeFilter === 'all') {
+    return '';
+  }
+
+  return state.scopeRecordTypeFilter.charAt(0).toUpperCase() + state.scopeRecordTypeFilter.slice(1);
+}
+
+/**
+ * @param {number[]} indices
+ * @returns {number[]}
+ */
+function filterIndicesByRecordType(indices) {
+  if (state.scopeRecordTypeFilter === 'all') {
+    return indices;
+  }
+
+  return indices.filter((index) => getRecordType(state.marcRecords[index]) === state.scopeRecordTypeFilter);
+}
+
+/**
+ * @param {number[]} indices
+ * @returns {string}
+ */
+function formatScopeStatusMessage(indices) {
+  const typeLabel = getScopeRecordTypeFilterLabel();
+  const rangeLabel = `Records ${formatRecordRanges(indices)}`;
+  if (!typeLabel) {
+    return rangeLabel;
+  }
+
+  return `${rangeLabel} (${typeLabel.toLowerCase()} only)`;
+}
+
+/**
+ * @returns {string}
+ */
+function getEmptyScopeMessage() {
+  const typeLabel = getScopeRecordTypeFilterLabel();
+  if (typeLabel) {
+    return `No ${typeLabel.toLowerCase()} records in scope.`;
+  }
+  return 'No records in scope.';
+}
+
 function updateRecordCountBadge() {
   const total = state.marcRecords.length;
-  const visible = getFilteredRecordIndices();
+  const visible = getVisibleRecordIndices();
 
-  if (recordListFilter === 'all' || visible.length === total) {
+  if ((recordListFilter === 'all' && !recordSearchQuery.trim()) || visible.length === total) {
     recordCount.textContent = `${total} record${total === 1 ? '' : 's'}`;
     return;
   }
@@ -262,91 +381,99 @@ function updateRecordCountBadge() {
   recordCount.textContent = `${visible.length} of ${total}`;
 }
 
+function buildRecordListItem(index) {
+  const record = state.marcRecords[index];
+  const row = state.parsedRows[index] ?? recordToParsedRow(record);
+  const preview = getRecordPreview(record);
+  const item = document.createElement('li');
+  item.className = 'record-item';
+  item.dataset.recordIndex = String(index);
+  item.setAttribute('role', 'option');
+  item.setAttribute('aria-selected', String(index === state.selectedIndex));
+  item.tabIndex = 0;
+
+  const scopeLabel = document.createElement('label');
+  scopeLabel.className = 'record-item-scope';
+  const scopeCheckbox = document.createElement('input');
+  scopeCheckbox.type = 'checkbox';
+  scopeCheckbox.className = 'record-scope-checkbox';
+  scopeCheckbox.dataset.recordIndex = String(index);
+  scopeCheckbox.checked = state.scopedRecordIndices.has(index);
+  scopeCheckbox.setAttribute('aria-label', `Include record ${index + 1} in batch scope`);
+  scopeLabel.append(scopeCheckbox);
+
+  const content = document.createElement('div');
+  content.className = 'record-item-content';
+  content.innerHTML = `
+    <div class="record-item-title">${escapeHtml(row.previewTitle ?? preview.title)}</div>
+    <div class="record-item-author">${escapeHtml(row.previewAuthor ?? preview.author)}</div>
+    <div class="record-item-row">Row ${record.sourceRowNumber} · ${record.recordType ?? 'bibliographic'}</div>
+  `;
+
+  item.append(scopeLabel, content);
+
+  const recordIssues = getRecordIssues(allValidationIssues, index);
+  const errorCount = recordIssues.filter((issue) => issue.level === 'error').length;
+  const warningCount = recordIssues.filter((issue) => issue.level === 'warning').length;
+  if (errorCount > 0) {
+    item.classList.add('record-item-has-errors');
+    const badge = document.createElement('span');
+    badge.className = 'record-validation-badge error';
+    badge.textContent = String(errorCount);
+    badge.setAttribute('aria-label', `${errorCount} validation errors`);
+    item.querySelector('.record-item-title')?.append(badge);
+  } else if (warningCount > 0) {
+    item.classList.add('record-item-has-warnings');
+    const badge = document.createElement('span');
+    badge.className = 'record-validation-badge warning';
+    badge.textContent = String(warningCount);
+    badge.setAttribute('aria-label', `${warningCount} validation warnings`);
+    item.querySelector('.record-item-title')?.append(badge);
+  }
+
+  scopeCheckbox.addEventListener('click', (event) => {
+    event.stopPropagation();
+  });
+  scopeCheckbox.addEventListener('change', (event) => {
+    event.stopPropagation();
+    toggleScopedRecord(index, event.target.checked);
+    syncScopeFieldsets();
+  });
+
+  const activate = () => selectRecord(index);
+  item.addEventListener('click', activate);
+  item.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      activate();
+    }
+  });
+  return item;
+}
+
 function renderRecordList() {
   recordList.innerHTML = '';
   updateRecordCountBadge();
-  const scopedIndices = state.scopedRecordIndices;
-  const filteredIndices = getFilteredRecordIndices();
+  const filteredIndices = getVisibleRecordIndices();
 
   if (filteredIndices.length === 0) {
     const emptyItem = document.createElement('li');
     emptyItem.className = 'record-list-empty';
-    const typeLabel = recordListFilter === 'all' ? '' : ` ${recordListFilter}`;
-    emptyItem.textContent = `No${typeLabel} records match this filter.`;
+    emptyItem.textContent = recordSearchQuery.trim()
+      ? 'No records match this search and filter.'
+      : `No ${recordListFilter === 'all' ? '' : `${recordListFilter} `}records match this filter.`;
     recordList.append(emptyItem);
     updateScopeSelectionBadge();
     return;
   }
 
-  filteredIndices.forEach((index) => {
-    const record = state.marcRecords[index];
-    const row = state.parsedRows[index] ?? recordToParsedRow(record);
-    const preview = getRecordPreview(record);
-    const item = document.createElement('li');
-    item.className = 'record-item';
-    item.dataset.recordIndex = String(index);
-    item.setAttribute('role', 'option');
-    item.setAttribute('aria-selected', String(index === state.selectedIndex));
-    item.tabIndex = 0;
-
-    const scopeLabel = document.createElement('label');
-    scopeLabel.className = 'record-item-scope';
-    const scopeCheckbox = document.createElement('input');
-    scopeCheckbox.type = 'checkbox';
-    scopeCheckbox.className = 'record-scope-checkbox';
-    scopeCheckbox.dataset.recordIndex = String(index);
-    scopeCheckbox.checked = scopedIndices.has(index);
-    scopeCheckbox.setAttribute('aria-label', `Include record ${index + 1} in batch scope`);
-    scopeLabel.append(scopeCheckbox);
-
-    const content = document.createElement('div');
-    content.className = 'record-item-content';
-    content.innerHTML = `
-      <div class="record-item-title">${escapeHtml(row.previewTitle ?? preview.title)}</div>
-      <div class="record-item-author">${escapeHtml(row.previewAuthor ?? preview.author)}</div>
-      <div class="record-item-row">Row ${record.sourceRowNumber} · ${record.recordType ?? 'bibliographic'}</div>
-    `;
-
-    item.append(scopeLabel, content);
-
-    const recordIssues = getRecordIssues(allValidationIssues, index);
-    const errorCount = recordIssues.filter((issue) => issue.level === 'error').length;
-    const warningCount = recordIssues.filter((issue) => issue.level === 'warning').length;
-    if (errorCount > 0) {
-      item.classList.add('record-item-has-errors');
-      const badge = document.createElement('span');
-      badge.className = 'record-validation-badge error';
-      badge.textContent = String(errorCount);
-      badge.setAttribute('aria-label', `${errorCount} validation errors`);
-      item.querySelector('.record-item-title')?.append(badge);
-    } else if (warningCount > 0) {
-      item.classList.add('record-item-has-warnings');
-      const badge = document.createElement('span');
-      badge.className = 'record-validation-badge warning';
-      badge.textContent = String(warningCount);
-      badge.setAttribute('aria-label', `${warningCount} validation warnings`);
-      item.querySelector('.record-item-title')?.append(badge);
-    }
-
-    scopeCheckbox.addEventListener('click', (event) => {
-      event.stopPropagation();
+  if (filteredIndices.length > 30) {
+    renderVirtualRecordList(recordList, filteredIndices, buildRecordListItem);
+  } else {
+    filteredIndices.forEach((index) => {
+      recordList.append(buildRecordListItem(index));
     });
-    scopeCheckbox.addEventListener('change', (event) => {
-      event.stopPropagation();
-      toggleScopedRecord(index, event.target.checked);
-      syncScopeFieldsets();
-    });
-
-    const activate = () => selectRecord(index);
-    item.addEventListener('click', activate);
-    item.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        activate();
-      }
-    });
-    recordList.append(item);
-  });
+  }
 
   updateScopeSelectionBadge();
 }
@@ -367,7 +494,7 @@ function selectRecord(index) {
  * @param {1|-1} direction
  */
 function selectRelativeRecord(direction) {
-  const visibleIndices = getFilteredRecordIndices();
+  const visibleIndices = getVisibleRecordIndices();
   if (visibleIndices.length === 0) {
     return;
   }
@@ -391,7 +518,7 @@ function handleRecordListFilterChange() {
   }
 
   recordListFilter = filterSelect.value;
-  const visibleIndices = getFilteredRecordIndices();
+  const visibleIndices = getVisibleRecordIndices();
 
   if (visibleIndices.length > 0 && !visibleIndices.includes(state.selectedIndex)) {
     selectRecord(visibleIndices[0]);
@@ -433,6 +560,36 @@ function formatMarcIndicatorsForDisplay(ind1, ind2) {
 }
 
 /**
+ * @param {string} code
+ * @returns {string}
+ */
+function formatSubfieldCodeForDisplay(code) {
+  const normalized = String(code ?? '').trim();
+  if (!normalized || normalized === ' ') {
+    return '';
+  }
+  return normalized;
+}
+
+/**
+ * @param {{ code: string }} subfield
+ * @param {string} text
+ */
+function applySubfieldCode(subfield, text) {
+  const normalized = String(text ?? '').slice(-1);
+  subfield.code = normalized || ' ';
+}
+
+/**
+ * @param {string} text
+ * @returns {string}
+ */
+function normalizeSubfieldCode(text) {
+  const match = String(text ?? '').match(/[a-z0-9]/i);
+  return match ? match[0].toLowerCase() : 'a';
+}
+
+/**
  * @param {MarcDataField} field
  * @param {string} text
  */
@@ -442,15 +599,77 @@ function applyMarcIndicators(field, text) {
   field.ind2 = normalized.charAt(1);
 }
 
+/** Persist the current in-memory record, refresh validation, preview, and list badges. */
+let commitRecordChangeTimer = null;
+
+/** @type {{ index: number, snapshot: MarcRecord }|null} */
+let recordEditBaseline = null;
+
+let recordEditUndoPushed = false;
+
+function resetRecordEditTracking(recordIndex) {
+  const record = state.marcRecords[recordIndex];
+  if (!record) {
+    recordEditBaseline = null;
+    recordEditUndoPushed = false;
+    return;
+  }
+
+  recordEditBaseline = {
+    index: recordIndex,
+    snapshot: cloneMarcRecord(record),
+  };
+  recordEditUndoPushed = false;
+}
+
+function maybePushRecordEditUndo(recordIndex) {
+  if (recordEditUndoPushed || !recordEditBaseline || recordEditBaseline.index !== recordIndex) {
+    return;
+  }
+
+  const current = state.marcRecords[recordIndex];
+  if (!current) {
+    return;
+  }
+
+  if (recordToMarcText(recordEditBaseline.snapshot) === recordToMarcText(current)) {
+    return;
+  }
+
+  roadmapApi?.pushUndo?.(
+    `Edit record ${recordIndex + 1}`,
+    new Map([[recordIndex, cloneMarcRecord(recordEditBaseline.snapshot)]]),
+  );
+  recordEditUndoPushed = true;
+}
+
 /**
- * Persist the current in-memory record, refresh validation, preview, and list badges.
  * @param {MarcRecord} record
+ * @param {boolean} [immediate]
  */
-function commitRecordChange(record) {
-  normalizeMarcRecord(record);
-  marcPreview.textContent = recordToMarcText(record);
-  refreshExportPreview();
-  refreshValidationUI();
+function commitRecordChange(record, immediate = false) {
+  const run = () => {
+    normalizeMarcRecord(record);
+    maybePushRecordEditUndo(state.selectedIndex);
+    state.parsedRows[state.selectedIndex] = recordToParsedRow(record);
+    marcPreview.textContent = recordToMarcText(record);
+    refreshExportPreview();
+    allValidationIssues = validateAllRecords(state.marcRecords, state.validationProfile);
+    renderValidationBanner();
+    renderRecordListValidationBadges();
+    applyValidationHighlights(state.selectedIndex);
+    flashAutosaveStatus();
+    roadmapApi?.scheduleDraftSave?.();
+  };
+
+  if (immediate) {
+    clearTimeout(commitRecordChangeTimer);
+    run();
+    return;
+  }
+
+  clearTimeout(commitRecordChangeTimer);
+  commitRecordChangeTimer = setTimeout(run, 250);
 }
 
 function getHighestIssueLevel(issues) {
@@ -513,6 +732,12 @@ function syncScopeFieldsets() {
     }
   });
 
+  document.querySelectorAll('.scope-type-filter').forEach((select) => {
+    if (select instanceof HTMLSelectElement) {
+      select.value = state.scopeRecordTypeFilter;
+    }
+  });
+
   syncRecordListCheckboxes();
 }
 
@@ -523,7 +748,9 @@ function syncScopeFieldsets() {
 function applyScopeFromText(panel) {
   const input = panel === 'cleanup'
     ? document.getElementById('cleanup-scope-text')
-    : document.getElementById('batch-scope-text');
+    : panel === 'export'
+      ? document.getElementById('export-scope-text')
+      : document.getElementById('batch-scope-text');
 
   if (!(input instanceof HTMLInputElement) || !hasRecords()) {
     return 'Load records first.';
@@ -657,30 +884,26 @@ function requestDeleteRecords() {
 }
 
 function setDuplicateStatus(message) {
-  const statusEl = document.getElementById('duplicate-status');
-  const undoButton = document.getElementById('duplicate-undo');
-  if (!statusEl) {
+  const row = document.getElementById('duplicate-status');
+  const text = document.getElementById('duplicate-status-text');
+  if (!row || !text) {
     return;
   }
 
   if (!message) {
-    statusEl.textContent = '';
-    statusEl.classList.add('hidden');
-    undoButton?.classList.add('hidden');
+    text.textContent = '';
+    row.classList.add('hidden');
     return;
   }
 
-  statusEl.textContent = message;
-  statusEl.classList.remove('hidden');
+  text.textContent = message;
+  row.classList.remove('hidden');
 }
 
 function updateDuplicateUndoUI() {
-  const undoButton = document.getElementById('duplicate-undo');
-  if (!undoButton) {
-    return;
+  if (!duplicateUndoState) {
+    setDuplicateStatus('');
   }
-
-  undoButton.classList.toggle('hidden', !duplicateUndoState);
 }
 
 function clearDuplicateUndo() {
@@ -743,8 +966,7 @@ function performDuplicate(indicesToDuplicate) {
 
   patchState({ selectedIndex: firstNewIndex });
   const countLabel = copies.length === 1 ? '1 record' : `${copies.length} records`;
-  setDuplicateStatus(`Duplicated ${countLabel}. Click Undo duplicate to remove the copies.`);
-  updateDuplicateUndoUI();
+  setDuplicateStatus(`Duplicated ${countLabel}.`);
   refreshEditView();
 }
 
@@ -772,11 +994,6 @@ function undoDuplicate() {
  */
 function handleScopeModeChange(mode) {
   setRecordScopeMode(mode);
-  if (mode === 'current') {
-    setScopedIndices([state.selectedIndex]);
-  } else if (mode === 'all') {
-    patchState({ scopedRecordIndices: new Set(allRecordIndices(state.marcRecords.length)) });
-  }
   syncScopeFieldsets();
 }
 
@@ -799,9 +1016,9 @@ function getScopeIndicesOrError(statusEl, panel = 'batch') {
     }
   }
 
-  const indices = getScopedIndices();
+  const indices = filterIndicesByRecordType(getScopedIndices());
   if (indices.length === 0) {
-    statusEl.textContent = 'No records in scope.';
+    statusEl.textContent = getEmptyScopeMessage();
     return null;
   }
 
@@ -921,6 +1138,17 @@ function navigateToIssue(issue) {
       }
     }
   });
+}
+
+let validationIssueCursor = 0;
+
+function navigateToNextValidationIssue() {
+  const visibleIssues = getVisibleValidationIssues();
+  if (visibleIssues.length === 0) {
+    return;
+  }
+  validationIssueCursor = (validationIssueCursor + 1) % visibleIssues.length;
+  navigateToIssue(visibleIssues[validationIssueCursor]);
 }
 
 /**
@@ -1078,6 +1306,17 @@ function renderValidationBanner() {
     fixHint.textContent = getIssueFixHint(issue.issueKey ?? '');
     item.append(fixHint);
 
+    const record = issue.recordIndex != null ? state.marcRecords[issue.recordIndex] : null;
+    const fixButton = record && roadmapApi?.renderAutoFixButton?.(issue, record, (fixed) => {
+      state.marcRecords[issue.recordIndex] = fixed;
+      state.parsedRows[issue.recordIndex] = recordToParsedRow(fixed);
+      refreshEditView();
+      renderEditor(fixed);
+    });
+    if (fixButton) {
+      item.append(fixButton);
+    }
+
     validationBannerList.append(item);
   });
 }
@@ -1172,7 +1411,7 @@ function refreshValidationUI() {
     return;
   }
 
-  allValidationIssues = validateAllRecords(state.marcRecords);
+  allValidationIssues = validateAllRecords(state.marcRecords, state.validationProfile);
   renderValidationBanner();
   renderRecordListValidationBadges();
   applyValidationHighlights(state.selectedIndex);
@@ -1218,6 +1457,24 @@ function renderRecordListValidationBadges() {
 
 function renderEditor(record) {
   selectedRecordMeta.textContent = `Row ${record.sourceRowNumber} · ${record.recordType ?? 'bibliographic'}`;
+  const mnemonicPanel = document.getElementById('mnemonic-editor-panel');
+  const mnemonicSync = document.getElementById('mnemonic-sync');
+  const isMnemonic = state.editorViewMode === 'mnemonic';
+
+  leaderEditor.classList.toggle('hidden', isMnemonic);
+  fieldEditor.classList.toggle('hidden', isMnemonic);
+  marcPreview.parentElement?.classList.toggle('hidden', isMnemonic);
+  mnemonicPanel?.classList.toggle('hidden', !isMnemonic);
+  mnemonicSync?.classList.toggle('hidden', !isMnemonic);
+  document.querySelector('.preview-panel')?.classList.toggle('hidden', isMnemonic);
+
+  if (isMnemonic && mnemonicPanel && roadmapApi) {
+    roadmapApi.renderMnemonicEditor(mnemonicPanel, record);
+    marcPreview.textContent = recordToMarcText(record);
+    resetRecordEditTracking(state.selectedIndex);
+    return;
+  }
+
   renderLeader(record, state.selectedIndex);
   fieldEditor.innerHTML = '';
 
@@ -1235,6 +1492,7 @@ function renderEditor(record) {
   marcPreview.textContent = recordToMarcText(record);
   refreshExportPreview();
   applyValidationHighlights(state.selectedIndex);
+  resetRecordEditTracking(state.selectedIndex);
 }
 
 function createPlainFixedValueInput({
@@ -1396,6 +1654,12 @@ function createDataFieldControlsRow(field, fieldIndex, fieldIssues, record) {
 
   control.append(tagLabel, indLabel);
   row.append(control);
+
+  const helpPanel = createFieldHelpPanel(field.tag);
+  if (helpPanel) {
+    row.append(helpPanel);
+  }
+
   return row;
 }
 
@@ -1420,6 +1684,59 @@ function renderFieldCard(field, fieldIndex, record, recordIndex) {
   label.textContent = field.type === 'control' ? `Control field ${field.tag}` : field.sourceLabel ?? `${field.tag} field`;
   header.append(label);
 
+  const actions = document.createElement('div');
+  actions.className = 'field-card-actions';
+
+  if (field.type === 'data') {
+    const moveUp = document.createElement('button');
+    moveUp.type = 'button';
+    moveUp.className = 'secondary';
+    moveUp.textContent = '↑';
+    moveUp.setAttribute('aria-label', 'Move field up');
+    moveUp.disabled = fieldIndex === 0;
+    moveUp.addEventListener('click', () => {
+      if (fieldIndex <= 0) return;
+      const fields = record.fields;
+      [fields[fieldIndex - 1], fields[fieldIndex]] = [fields[fieldIndex], fields[fieldIndex - 1]];
+      renderEditor(record);
+      commitRecordChange(record, true);
+    });
+
+    const moveDown = document.createElement('button');
+    moveDown.type = 'button';
+    moveDown.className = 'secondary';
+    moveDown.textContent = '↓';
+    moveDown.setAttribute('aria-label', 'Move field down');
+    moveDown.disabled = fieldIndex >= record.fields.length - 1;
+    moveDown.addEventListener('click', () => {
+      if (fieldIndex >= record.fields.length - 1) return;
+      const fields = record.fields;
+      [fields[fieldIndex + 1], fields[fieldIndex]] = [fields[fieldIndex], fields[fieldIndex + 1]];
+      renderEditor(record);
+      commitRecordChange(record, true);
+    });
+
+    const duplicateBtn = document.createElement('button');
+    duplicateBtn.type = 'button';
+    duplicateBtn.className = 'secondary';
+    duplicateBtn.textContent = 'Duplicate';
+    duplicateBtn.addEventListener('click', () => {
+      record.fields.splice(fieldIndex + 1, 0, structuredClone(field));
+      renderEditor(record);
+      commitRecordChange(record, true);
+    });
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'secondary';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', () => {
+      roadmapApi?.setFieldClipboard(field);
+    });
+
+    actions.append(moveUp, moveDown, duplicateBtn, copyBtn);
+  }
+
   if (field.type !== 'control' || !isProtectedControlTag(field.tag)) {
     const removeButton = document.createElement('button');
     removeButton.type = 'button';
@@ -1430,8 +1747,10 @@ function renderFieldCard(field, fieldIndex, record, recordIndex) {
       refreshValidationUI();
       renderEditor(record);
     });
-    header.append(removeButton);
+    actions.append(removeButton);
   }
+
+  header.append(actions);
 
   card.append(header);
 
@@ -1515,16 +1834,32 @@ function renderSubfieldRow(field, subfieldIndex, record, fieldIssues) {
   const codeLabel = document.createElement('label');
   codeLabel.textContent = 'Code';
   const codeInput = document.createElement('input');
+  codeInput.type = 'text';
   codeInput.className = 'subfield-row-code field-input';
   codeInput.maxLength = 1;
-  codeInput.value = subfield.code;
+  codeInput.inputMode = 'text';
+  codeInput.value = formatSubfieldCodeForDisplay(subfield.code);
+  codeInput.placeholder = 'a';
+  codeInput.autocomplete = 'off';
+  codeInput.spellcheck = false;
+  codeInput.setAttribute('aria-label', `Subfield code for field ${field.tag}`);
   codeInput.classList.toggle(
     'input-invalid',
     subfieldIssues.some((issue) => issue.level === 'error' && issue.path?.includes('code')),
   );
+  codeInput.addEventListener('focus', (event) => {
+    requestAnimationFrame(() => {
+      event.target.select();
+    });
+  });
   codeInput.addEventListener('input', (event) => {
-    subfield.code = event.target.value.slice(0, 1) || 'a';
+    applySubfieldCode(subfield, event.target.value);
     commitRecordChange(record);
+  });
+  codeInput.addEventListener('blur', (event) => {
+    subfield.code = normalizeSubfieldCode(event.target.value);
+    event.target.value = formatSubfieldCodeForDisplay(subfield.code);
+    commitRecordChange(record, true);
   });
   codeLabel.append(codeInput);
 
@@ -1546,6 +1881,7 @@ function renderSubfieldRow(field, subfieldIndex, record, fieldIssues) {
     subfield.value = event.target.value;
     commitRecordChange(record);
   });
+  attachDiacriticsButton(valueInput);
   valueLabel.append(valueInput);
 
   const removeButton = document.createElement('button');
@@ -1823,6 +2159,7 @@ function commitBatchChanges(before, after, statusEl, panel, list, indices) {
     statusEl.textContent = 'No changes detected.';
   } else {
     batchUndoState = createUndoState(before, summaries);
+    roadmapApi?.pushUndo?.('Batch find/replace', batchUndoState.snapshots);
     statusEl.textContent = renderChangeLog(summaries, panel, list, 'batch');
   }
 
@@ -1874,6 +2211,224 @@ function commitCleanupChanges(beforeMap, statusEl, panel, list) {
   refreshEditView();
 }
 
+function remapIndexAfterMove(index, fromIndex, toIndex) {
+  if (index === fromIndex) {
+    return toIndex;
+  }
+  if (fromIndex < toIndex) {
+    if (index > fromIndex && index <= toIndex) {
+      return index - 1;
+    }
+  } else if (fromIndex > toIndex) {
+    if (index >= toIndex && index < fromIndex) {
+      return index + 1;
+    }
+  }
+  return index;
+}
+
+function renumberSourceRows() {
+  state.marcRecords.forEach((record, index) => {
+    record.sourceRowNumber = index + 1;
+    if (state.parsedRows[index]) {
+      state.parsedRows[index].rowNumber = index + 1;
+    }
+  });
+}
+
+/**
+ * @param {number} fromIndex
+ * @param {number} toIndex
+ */
+function moveRecordToIndex(fromIndex, toIndex) {
+  if (!hasRecords() || fromIndex === toIndex) {
+    return;
+  }
+  if (fromIndex < 0 || toIndex < 0 || fromIndex >= state.marcRecords.length || toIndex >= state.marcRecords.length) {
+    return;
+  }
+
+  const [record] = state.marcRecords.splice(fromIndex, 1);
+  const [row] = state.parsedRows.splice(fromIndex, 1);
+  state.marcRecords.splice(toIndex, 0, record);
+  state.parsedRows.splice(toIndex, 0, row);
+
+  patchState({ selectedIndex: remapIndexAfterMove(state.selectedIndex, fromIndex, toIndex) });
+  state.scopedRecordIndices = new Set(
+    [...state.scopedRecordIndices].map((index) => remapIndexAfterMove(index, fromIndex, toIndex)),
+  );
+
+  if (duplicateUndoState) {
+    duplicateUndoState = {
+      addedIndices: duplicateUndoState.addedIndices.map((index) => remapIndexAfterMove(index, fromIndex, toIndex)),
+      previousSelectedIndex: remapIndexAfterMove(duplicateUndoState.previousSelectedIndex, fromIndex, toIndex),
+    };
+  }
+
+  renumberSourceRows();
+  refreshEditView();
+  renderRecordOrderList();
+  roadmapApi?.scheduleDraftSave?.();
+}
+
+/**
+ * @param {number} index
+ * @param {number} delta
+ */
+function moveRecordByDelta(index, delta) {
+  moveRecordToIndex(index, index + delta);
+}
+
+function renderRecordOrderList() {
+  const list = document.getElementById('record-order-list');
+  const empty = document.getElementById('order-empty');
+  if (!list) {
+    return;
+  }
+
+  list.innerHTML = '';
+
+  if (!hasRecords()) {
+    empty?.classList.remove('hidden');
+    return;
+  }
+
+  empty?.classList.add('hidden');
+
+  state.marcRecords.forEach((record, index) => {
+    const row = state.parsedRows[index];
+    const preview = getRecordPreview(record);
+    const title = row?.previewTitle ?? preview.title ?? 'Untitled';
+
+    const item = document.createElement('li');
+    item.className = 'record-order-item';
+
+    const position = document.createElement('span');
+    position.className = 'record-order-position';
+    position.textContent = String(index + 1);
+
+    const titleEl = document.createElement('span');
+    titleEl.className = 'record-order-title';
+    titleEl.textContent = title;
+    titleEl.title = title;
+
+    const actions = document.createElement('div');
+    actions.className = 'record-order-actions';
+
+    const upButton = document.createElement('button');
+    upButton.type = 'button';
+    upButton.className = 'secondary';
+    upButton.textContent = 'Move up';
+    upButton.disabled = index === 0;
+    upButton.setAttribute('aria-label', `Move record ${index + 1} up`);
+    upButton.addEventListener('click', () => moveRecordByDelta(index, -1));
+
+    const downButton = document.createElement('button');
+    downButton.type = 'button';
+    downButton.className = 'secondary';
+    downButton.textContent = 'Move down';
+    downButton.disabled = index === state.marcRecords.length - 1;
+    downButton.setAttribute('aria-label', `Move record ${index + 1} down`);
+    downButton.addEventListener('click', () => moveRecordByDelta(index, 1));
+
+    const moveForm = document.createElement('form');
+    moveForm.className = 'record-order-move-form';
+    moveForm.setAttribute('aria-label', `Move record ${index + 1} to position`);
+    moveForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const input = moveForm.querySelector('input');
+      if (!(input instanceof HTMLInputElement)) {
+        return;
+      }
+      const target = Number(input.value);
+      if (!Number.isInteger(target) || target < 1 || target > state.marcRecords.length) {
+        const statusEl = document.getElementById('order-status');
+        if (statusEl) {
+          statusEl.textContent = `Enter a position between 1 and ${state.marcRecords.length}.`;
+        }
+        return;
+      }
+      moveRecordToIndex(index, target - 1);
+      const statusEl = document.getElementById('order-status');
+      if (statusEl) {
+        statusEl.textContent = `Moved record to position ${target}.`;
+      }
+    });
+
+    const positionInput = document.createElement('input');
+    positionInput.type = 'number';
+    positionInput.min = '1';
+    positionInput.max = String(state.marcRecords.length);
+    positionInput.placeholder = '#';
+    positionInput.setAttribute('aria-label', `Target position for record ${index + 1}`);
+
+    const moveButton = document.createElement('button');
+    moveButton.type = 'submit';
+    moveButton.className = 'secondary';
+    moveButton.textContent = 'Move';
+
+    moveForm.append(positionInput, moveButton);
+    actions.append(upButton, downButton, moveForm);
+    item.append(position, titleEl, actions);
+    list.append(item);
+  });
+}
+
+function getRecordSelectLabel(index) {
+  const record = state.marcRecords[index];
+  const row = state.parsedRows[index];
+  const preview = getRecordPreview(record);
+  const title = row?.previewTitle ?? preview.title ?? 'Untitled';
+  const truncated = title.length > 80 ? `${title.slice(0, 77)}…` : title;
+  return `${index + 1} - ${truncated}`;
+}
+
+function populateCompareRecordSelects() {
+  const selectA = document.getElementById('compare-record-a');
+  const selectB = document.getElementById('compare-record-b');
+  if (!(selectA instanceof HTMLSelectElement) || !(selectB instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  const previousA = selectA.value;
+  const previousB = selectB.value;
+
+  selectA.replaceChildren();
+  selectB.replaceChildren();
+
+  if (!hasRecords()) {
+    const emptyOption = document.createElement('option');
+    emptyOption.value = '';
+    emptyOption.textContent = 'No records loaded';
+    selectA.append(emptyOption);
+    selectB.append(emptyOption.cloneNode(true));
+    return;
+  }
+
+  state.marcRecords.forEach((_, index) => {
+    const label = getRecordSelectLabel(index);
+    for (const select of [selectA, selectB]) {
+      const option = document.createElement('option');
+      option.value = String(index);
+      option.textContent = label;
+      select.append(option);
+    }
+  });
+
+  if (previousA && selectA.querySelector(`option[value="${previousA}"]`)) {
+    selectA.value = previousA;
+  } else {
+    selectA.value = String(state.selectedIndex);
+  }
+
+  if (previousB && selectB.querySelector(`option[value="${previousB}"]`)) {
+    selectB.value = previousB;
+  } else {
+    const defaultB = Math.min(state.selectedIndex + 1, state.marcRecords.length - 1);
+    selectB.value = String(defaultB);
+  }
+}
+
 function cloneRecords(records) {
   return records.map((record) => cloneMarcRecord(record));
 }
@@ -1886,11 +2441,43 @@ function applyBatchFindReplace(records, options, indices) {
   });
 }
 
+function isBatchSetMode(options) {
+  return !options.find.trim() && Boolean(options.tagFilter) && Boolean(options.subfieldFilter);
+}
+
+function applyBatchOperation(records, options, indices) {
+  if (isBatchSetMode(options)) {
+    return batchSetSubfieldValue(records, indices, options.tagFilter, options.subfieldFilter, options.replace);
+  }
+  return applyBatchFindReplace(records, options, indices);
+}
+
+function validateBatchOptions(options, statusEl) {
+  if (options.find.trim()) {
+    return true;
+  }
+  if (options.tagFilter && options.subfieldFilter) {
+    return true;
+  }
+  statusEl.textContent = 'Enter text to find, or leave Find empty with Tag and Subfield set to replace a subfield value.';
+  return false;
+}
+
 async function handleImportFile(file) {
   if (!file) return;
   setStatus(`Loading ${file.name}...`);
   try {
     const result = await importUploadedFile(await file.arrayBuffer(), file.name);
+    const parsedRows = result.parsedRows ?? result.rows;
+    const hasSpreadsheetData = Array.isArray(parsedRows) && parsedRows.length > 0;
+    const hasColumns = (result.columnSchema?.length ?? 0) > 0 || (result.skippedColumns?.length ?? 0) > 0;
+
+    if (hasSpreadsheetData && !result.records && hasColumns) {
+      showColumnMappingPanel?.({ ...result, parsedRows, filename: file.name });
+      setStatus('Review column mapping and order, then click Apply mapping & import.');
+      return;
+    }
+
     loadImportResult(result, file.name);
   } catch (error) {
     setStatus(error instanceof Error ? error.message : 'Unable to read file.', true);
@@ -1900,7 +2487,20 @@ async function handleImportFile(file) {
 function wireDropZone(zoneId, inputId, handler) {
   const zone = document.getElementById(zoneId);
   const input = document.getElementById(inputId);
-  zone.addEventListener('click', () => input.click());
+  if (!(zone instanceof HTMLElement) || !(input instanceof HTMLInputElement)) {
+    return;
+  }
+
+  input.addEventListener('click', (event) => {
+    event.stopPropagation();
+  });
+
+  zone.addEventListener('click', (event) => {
+    if (event.target === input || input.contains(event.target)) {
+      return;
+    }
+    input.click();
+  });
   zone.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); input.click(); }
   });
@@ -1919,15 +2519,146 @@ function wireDropZone(zoneId, inputId, handler) {
 
 wireDropZone('drop-zone-import', 'file-input-import', handleImportFile);
 
+/** @type {import('../lib/record-templates.js').RecordTemplate[]} */
+let customTemplates = [];
+
+function updateDeleteTemplateButtonState() {
+  const templateSelect = document.getElementById('new-record-template');
+  const deleteButton = document.getElementById('delete-record-template');
+  if (!(templateSelect instanceof HTMLSelectElement) || !(deleteButton instanceof HTMLButtonElement)) {
+    return;
+  }
+  const canDelete = isCustomTemplateSelectValue(templateSelect.value);
+  deleteButton.disabled = !canDelete;
+}
+
+function syncNewRecordTemplateOptions() {
+  const recordTypeSelect = document.getElementById('record-type-select');
+  const templateField = document.getElementById('new-record-template-field');
+  const templateSelect = document.getElementById('new-record-template');
+  const deleteButton = document.getElementById('delete-record-template');
+  if (!(recordTypeSelect instanceof HTMLSelectElement) || !(templateSelect instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  const recordType = recordTypeSelect.value;
+  const previousTemplate = templateSelect.value;
+  const templatesForType = getCustomTemplatesForRecordType(recordType, customTemplates);
+  const hasTemplates = templatesForType.length > 0;
+
+  templateField?.classList.toggle('hidden', !hasTemplates);
+  deleteButton?.classList.toggle('hidden', !hasTemplates);
+
+  templateSelect.replaceChildren();
+  const blankOption = document.createElement('option');
+  blankOption.value = '';
+  blankOption.textContent = 'Blank (minimal fields)';
+  templateSelect.append(blankOption);
+
+  templatesForType.forEach((template) => {
+    const option = document.createElement('option');
+    option.value = toTemplateSelectValue(template);
+    option.textContent = template.label;
+    templateSelect.append(option);
+  });
+
+  if (previousTemplate && [...templateSelect.options].some((option) => option.value === previousTemplate)) {
+    templateSelect.value = previousTemplate;
+  }
+
+  updateDeleteTemplateButtonState();
+}
+
+async function persistCustomTemplates() {
+  await saveCustomTemplates(customTemplates);
+  syncNewRecordTemplateOptions();
+}
+
+document.getElementById('record-type-select')?.addEventListener('change', syncNewRecordTemplateOptions);
+document.getElementById('new-record-template')?.addEventListener('change', updateDeleteTemplateButtonState);
+
 document.getElementById('new-record').addEventListener('click', () => {
-  const recordType = document.getElementById('record-type-select').value;
-  const record = createBlankRecord(recordType, state.marcRecords.length + 1);
+  const recordTypeSelect = document.getElementById('record-type-select');
+  const templateSelect = document.getElementById('new-record-template');
+  const recordType = recordTypeSelect instanceof HTMLSelectElement ? recordTypeSelect.value : 'bibliographic';
+  const templateSelectValue = templateSelect instanceof HTMLSelectElement ? templateSelect.value : '';
+  const rowNumber = state.marcRecords.length + 1;
+
+  const record = templateSelectValue
+    ? buildRecordFromTemplate(templateSelectValue, rowNumber, customTemplates)
+    : createBlankRecord(recordType, rowNumber);
+
   state.marcRecords.push(record);
   state.parsedRows.push(recordToParsedRow(record));
   patchState({ selectedIndex: state.marcRecords.length - 1 });
   clearDuplicateUndo();
   refreshEditView();
   switchTab('edit');
+
+  if (templateSelectValue) {
+    const template = findTemplateBySelectValue(templateSelectValue, customTemplates);
+    setStatus(`Added record from template “${template?.label ?? 'saved template'}”.`);
+    return;
+  }
+
+  setStatus(`Added blank ${recordType} record.`);
+});
+
+document.getElementById('save-as-template')?.addEventListener('click', async () => {
+  if (!hasRecords() || state.selectedIndex < 0) {
+    setStatus('Open a record before saving a template.');
+    return;
+  }
+
+  const record = state.marcRecords[state.selectedIndex];
+  const defaultName = `${record.recordType ?? 'bibliographic'} template`;
+  const name = window.prompt('Template name', defaultName);
+  if (!name?.trim()) {
+    return;
+  }
+
+  const template = createTemplateFromRecord(record, name);
+  customTemplates.push(template);
+  await persistCustomTemplates();
+
+  const recordTypeSelect = document.getElementById('record-type-select');
+  if (recordTypeSelect instanceof HTMLSelectElement) {
+    recordTypeSelect.value = template.recordType;
+  }
+  syncNewRecordTemplateOptions();
+
+  const templateSelect = document.getElementById('new-record-template');
+  if (templateSelect instanceof HTMLSelectElement) {
+    templateSelect.value = toTemplateSelectValue(template);
+    updateDeleteTemplateButtonState();
+  }
+
+  setStatus(`Saved template “${template.label}”.`);
+});
+
+document.getElementById('delete-record-template')?.addEventListener('click', async () => {
+  const templateSelect = document.getElementById('new-record-template');
+  if (!(templateSelect instanceof HTMLSelectElement) || !isCustomTemplateSelectValue(templateSelect.value)) {
+    return;
+  }
+
+  const template = findTemplateBySelectValue(templateSelect.value, customTemplates);
+  if (!template) {
+    return;
+  }
+
+  if (!window.confirm(`Delete template “${template.label}”?`)) {
+    return;
+  }
+
+  customTemplates = customTemplates.filter((item) => item.id !== template.id);
+  await persistCustomTemplates();
+  setStatus(`Deleted template “${template.label}”.`);
+});
+
+loadCustomTemplates().then((templates) => {
+  customTemplates = templates;
+  syncNewRecordTemplateOptions();
 });
 
 document.getElementById('duplicate-record').addEventListener('click', () => {
@@ -2007,7 +2738,7 @@ document.getElementById('export-records').addEventListener('click', async () => 
       return;
     }
   }
-  await exportRecords(state.marcRecords, exportFormat.value);
+  await exportRecords(roadmapApi?.getExportRecords?.() ?? state.marcRecords, exportFormat.value);
 });
 
 validationBannerToggle.addEventListener('click', () => {
@@ -2027,13 +2758,12 @@ document.getElementById('batch-preview-btn').addEventListener('click', () => {
   }
 
   const options = getBatchReplaceOptions();
-  if (!options.find) {
-    statusEl.textContent = 'Enter text to find.';
+  if (!validateBatchOptions(options, statusEl)) {
     return;
   }
 
   const before = cloneRecords(state.marcRecords);
-  const after = applyBatchFindReplace(before, options, indices);
+  const after = applyBatchOperation(before, options, indices);
   const summaries = diffScopedRecords(before, after, indices);
   statusEl.textContent = `Preview: ${renderChangeLog(summaries, panel, list)}`;
 });
@@ -2049,13 +2779,12 @@ document.getElementById('batch-apply-btn').addEventListener('click', () => {
   }
 
   const options = getBatchReplaceOptions();
-  if (!options.find) {
-    statusEl.textContent = 'Enter text to find.';
+  if (!validateBatchOptions(options, statusEl)) {
     return;
   }
 
   const before = cloneRecords(state.marcRecords);
-  const after = applyBatchFindReplace(state.marcRecords, options, indices);
+  const after = applyBatchOperation(state.marcRecords, options, indices);
   commitBatchChanges(before, after, statusEl, panel, list, indices);
 });
 
@@ -2275,7 +3004,7 @@ document.getElementById('scope-select-all')?.addEventListener('click', () => {
     return;
   }
 
-  const indices = getFilteredRecordIndices();
+  const indices = getVisibleRecordIndices();
   setScopedIndices(indices);
   setRecordScopeMode(indices.length === state.marcRecords.length ? 'all' : 'custom');
   syncScopeFieldsets();
@@ -2290,7 +3019,7 @@ document.getElementById('scope-clear-selection')?.addEventListener('click', () =
   syncScopeFieldsets();
 });
 
-['batch-record-scope-mode', 'cleanup-record-scope-mode'].forEach((groupName) => {
+['batch-record-scope-mode', 'cleanup-record-scope-mode', 'export-record-scope-mode'].forEach((groupName) => {
   document.querySelectorAll(`input[name="${groupName}"]`).forEach((radio) => {
     radio.addEventListener('change', () => {
       if (radio.checked) {
@@ -2300,22 +3029,73 @@ document.getElementById('scope-clear-selection')?.addEventListener('click', () =
   });
 });
 
+document.querySelector('.nav-tab[data-tab="order"]')?.addEventListener('click', () => {
+  renderRecordOrderList();
+});
+
 document.getElementById('batch-scope-apply')?.addEventListener('click', () => {
   const statusEl = document.getElementById('batch-status');
   const error = applyScopeFromText('batch');
-  statusEl.textContent = error ?? `Scope applied: Records ${formatRecordRanges(getScopedIndices())}.`;
+  if (error) {
+    statusEl.textContent = error;
+    return;
+  }
+  const indices = filterIndicesByRecordType(getScopedIndices());
+  statusEl.textContent = indices.length === 0
+    ? getEmptyScopeMessage()
+    : `Scope applied: ${formatScopeStatusMessage(indices)}.`;
+});
+
+document.getElementById('export-scope-apply')?.addEventListener('click', () => {
+  const error = applyScopeFromText('export');
+  if (error) {
+    setStatus(error, true);
+    return;
+  }
+  const indices = filterIndicesByRecordType(getScopedIndices());
+  setStatus(indices.length === 0
+    ? 'Export scope applied, but no records match the current filters.'
+    : `Export scope applied: ${formatScopeStatusMessage(indices)}.`);
+  refreshExportPreview();
+  roadmapApi?.updateLinkCheckButtonLabel?.();
 });
 
 document.getElementById('cleanup-scope-apply')?.addEventListener('click', () => {
   const statusEl = document.getElementById('cleanup-status');
   const error = applyScopeFromText('cleanup');
-  statusEl.textContent = error ?? `Scope applied: Records ${formatRecordRanges(getScopedIndices())}.`;
+  if (error) {
+    statusEl.textContent = error;
+    return;
+  }
+  const indices = filterIndicesByRecordType(getScopedIndices());
+  statusEl.textContent = indices.length === 0
+    ? getEmptyScopeMessage()
+    : `Scope applied: ${formatScopeStatusMessage(indices)}.`;
+});
+
+document.querySelectorAll('.scope-type-filter').forEach((select) => {
+  select.addEventListener('change', () => {
+    if (!(select instanceof HTMLSelectElement)) {
+      return;
+    }
+    patchState({ scopeRecordTypeFilter: select.value });
+    syncScopeFieldsets();
+  });
 });
 
 document.getElementById('batch-scope-text')?.addEventListener('blur', () => {
   if (state.recordScopeMode === 'custom') {
     applyScopeFromText('batch');
     syncScopeFieldsets();
+  }
+});
+
+document.getElementById('export-scope-text')?.addEventListener('blur', () => {
+  if (state.recordScopeMode === 'custom') {
+    applyScopeFromText('export');
+    syncScopeFieldsets();
+    refreshExportPreview();
+    roadmapApi?.updateLinkCheckButtonLabel?.();
   }
 });
 
@@ -2330,4 +3110,47 @@ document.querySelectorAll('.sample-link').forEach((sampleLink) => {
   if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
     sampleLink.href = chrome.runtime.getURL('BookDonationTemplate.xlsx');
   }
+});
+
+const { showColumnMappingPanel } = initColumnMappingUI({
+  loadImportResult,
+  setStatus,
+  buildMarcRecords,
+  normalizeMarcRecords,
+  patchState,
+});
+
+roadmapApi = initRoadmapFeatures({
+  state,
+  patchState,
+  hasRecords,
+  getFilteredRecordIndices,
+  getVisibleRecordIndices,
+  refreshEditView,
+  refreshExportPreview,
+  populateCompareRecordSelects,
+  switchTab,
+  setStatus,
+  loadImportResult,
+  buildMarcRecords,
+  normalizeMarcRecords,
+  cloneMarcRecord,
+  selectRecord,
+  commitRecordChange,
+  resetRecordEditTracking,
+  renderEditor,
+  refreshValidationUI,
+  getScopeIndicesOrError,
+  filterIndicesByRecordType,
+  getScopedIndices,
+  createBlankRecord,
+  recordToParsedRow,
+  allValidationIssuesRef: { get value() { return allValidationIssues; }, set value(v) { allValidationIssues = v; } },
+  navigateToNextValidationIssue,
+  setRecordSearchQuery: (query) => {
+    recordSearchQuery = query;
+    renderRecordList();
+    renderValidationBanner();
+    roadmapApi?.updateLinkCheckButtonLabel?.();
+  },
 });

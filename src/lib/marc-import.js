@@ -221,6 +221,19 @@ function parseMnemonicChunk(chunk) {
 }
 
 /**
+ * Parse a single MARC mnemonic record from text.
+ * @param {string} text
+ * @returns {MarcRecord}
+ */
+export function parseMarcTextToRecord(text) {
+  const records = parseMarcMnemonic(text);
+  if (records.length === 0) {
+    throw new Error('No MARC mnemonic record found.');
+  }
+  return records[0];
+}
+
+/**
  * @param {string} xmlText
  * @returns {MarcRecord[]}
  */

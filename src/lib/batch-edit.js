@@ -242,12 +242,59 @@ export function batchFindReplace(records, options) {
 
 /**
  * @param {MarcRecord[]} records
+ * @param {number[]} indices
  * @param {string} tag
  * @param {string} subfieldCode
  * @param {string} value
- * @param {number[]} [indices]
  * @returns {MarcRecord[]}
  */
+export function batchSetSubfieldValue(records, indices, tag, subfieldCode, value) {
+  const normalizedTag = tag.padStart(3, '0').slice(-3);
+  const code = subfieldCode.slice(0, 1) || 'a';
+
+  return records.map((record, recordIndex) => {
+    if (!isInScope(recordIndex, indices)) {
+      return record;
+    }
+
+    let matched = false;
+    const fields = record.fields.map((field) => {
+      if (field.type !== 'data' || field.tag !== normalizedTag) {
+        return field;
+      }
+
+      matched = true;
+      let replaced = false;
+      const subfields = field.subfields.map((subfield) => {
+        if (subfield.code !== code) {
+          return subfield;
+        }
+        replaced = true;
+        return { ...subfield, value };
+      });
+
+      if (!replaced) {
+        subfields.push({ code, value });
+      }
+
+      return { ...field, subfields };
+    });
+
+    if (!matched && value.trim()) {
+      fields.push({
+        type: 'data',
+        tag: normalizedTag,
+        ind1: ' ',
+        ind2: ' ',
+        subfields: [{ code, value }],
+        group: 'Other',
+      });
+    }
+
+    return { ...record, fields };
+  });
+}
+
 export function batchAddSubfield(records, tag, subfieldCode, value, indices) {
   return records.map((record, recordIndex) => {
     if (!isInScope(recordIndex, indices)) {

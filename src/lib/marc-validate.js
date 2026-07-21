@@ -1,6 +1,7 @@
 import { getRecordPreview } from './marc-model.js';
 import { getField008Length } from './marc-fixed-field.js';
 import { formatRecordRanges } from './record-scope.js';
+import { filterIssuesByProfile } from './validation-profiles.js';
 
 /** @typedef {import('./marc-builder.js').MarcRecord} MarcRecord */
 
@@ -307,7 +308,119 @@ export function validateRecord(record) {
     }
   }
 
+  const isbnFields = [];
+  const title245Fields = [];
+  record.fields.forEach((field, fieldIndex) => {
+    if (field.type === 'data' && field.tag === '020') {
+      isbnFields.push(fieldIndex);
+      field.subfields.forEach((subfield, subfieldIndex) => {
+        if (subfield.code === 'a' && subfield.value.trim()) {
+          const checksumIssue = validateIsbnChecksum(subfield.value);
+          if (checksumIssue) {
+            issues.push({
+              level: 'warning',
+              message: checksumIssue,
+              fieldIndex,
+              subfieldIndex,
+              tag: '020',
+              path: fieldPath(fieldIndex, subfieldIndex, 'value'),
+            });
+          }
+        }
+      });
+    }
+    if (field.type === 'data' && field.tag === '245') {
+      title245Fields.push(fieldIndex);
+    }
+  });
+
+  if (isbnFields.length > 1) {
+    issues.push({
+      level: 'warning',
+      message: 'Record has multiple 020 (ISBN) fields.',
+      fieldIndex: isbnFields[1],
+      tag: '020',
+      path: fieldPath(isbnFields[1]),
+    });
+  }
+
+  if (title245Fields.length > 1) {
+    issues.push({
+      level: 'warning',
+      message: 'Record has multiple 245 (title) fields.',
+      fieldIndex: title245Fields[1],
+      tag: '245',
+      path: fieldPath(title245Fields[1]),
+    });
+  }
+
+  const field008 = record.fields.find((field) => field.type === 'control' && field.tag === '008');
+  if (field008 && record.leader.length === 24) {
+    const leaderType = record.leader.charAt(6);
+    const material008 = field008.value.charAt(0);
+    if (leaderType === 'a' && material008 && !'abcdefghijklmnop'.includes(material008)) {
+      issues.push({
+        level: 'warning',
+        message: 'Leader type (position 07) and 008 material type may not match.',
+        fieldIndex: record.fields.indexOf(field008),
+        tag: '008',
+        path: 'leader-008-mismatch',
+      });
+    }
+  }
+
+  record.fields.forEach((field, fieldIndex) => {
+    if (field.type !== 'data') {
+      return;
+    }
+    if (field.tag === '260' || field.tag === '264') {
+      field.subfields.forEach((subfield, subfieldIndex) => {
+        if (subfield.code === 'c' && subfield.value.trim() && !/^\d{4}([\-/]\d{4})?$/.test(subfield.value.trim())) {
+          issues.push({
+            level: 'warning',
+            message: `${field.tag} $c date "${subfield.value}" does not match a typical year or year range pattern.`,
+            fieldIndex,
+            subfieldIndex,
+            tag: field.tag,
+            path: fieldPath(fieldIndex, subfieldIndex, 'value'),
+          });
+        }
+      });
+    }
+  });
+
   return issues.map((issue) => enrichIssue(issue));
+}
+
+/**
+ * @param {string} raw
+ * @returns {string|null}
+ */
+function validateIsbnChecksum(raw) {
+  const digits = raw.replace(/[^0-9Xx]/g, '').toUpperCase();
+  if (digits.length === 10) {
+    let sum = 0;
+    for (let i = 0; i < 9; i += 1) {
+      sum += Number(digits.charAt(i)) * (10 - i);
+    }
+    const check = digits.charAt(9) === 'X' ? 10 : Number(digits.charAt(9));
+    if ((sum + check) % 11 !== 0) {
+      return 'ISBN-10 checksum appears invalid.';
+    }
+    return null;
+  }
+  if (digits.length === 13) {
+    let sum = 0;
+    for (let i = 0; i < 12; i += 1) {
+      sum += Number(digits.charAt(i)) * (i % 2 === 0 ? 1 : 3);
+    }
+    const check = (10 - (sum % 10)) % 10;
+    if (check !== Number(digits.charAt(12))) {
+      return 'ISBN-13 checksum appears invalid.';
+    }
+    return null;
+  }
+  return null;
 }
 
 /**
@@ -375,20 +488,33 @@ function supportsBatchEditForKey(issueKey) {
 }
 
 /**
- * @param {MarcRecord[]} records
+ * @param {MarcRecord} record
+ * @param {number} recordIndex
+ * @param {import('./validation-profiles.js').ValidationProfile} [profile]
  * @returns {ValidationIssue[]}
  */
-export function validateAllRecords(records) {
-  return records.flatMap((record, recordIndex) => {
-    const preview = getRecordPreview(record);
-    const recordLabel = preview.title;
+export function validateRecordAtIndex(record, recordIndex, profile = 'cataloguing') {
+  const preview = getRecordPreview(record);
+  const issues = validateRecord(record).map((issue) => ({
+    ...issue,
+    recordIndex,
+    recordLabel: preview.title,
+  }));
 
-    return validateRecord(record).map((issue) => ({
-      ...issue,
-      recordIndex,
-      recordLabel,
-    }));
-  });
+  return filterIssuesByProfile(profile, issues);
+}
+
+/**
+ * @param {MarcRecord[]} records
+ * @param {import('./validation-profiles.js').ValidationProfile} [profile]
+ * @returns {ValidationIssue[]}
+ */
+export function validateAllRecords(records, profile = 'cataloguing') {
+  const issues = records.flatMap((record, recordIndex) =>
+    validateRecordAtIndex(record, recordIndex, profile),
+  );
+
+  return issues;
 }
 
 /**

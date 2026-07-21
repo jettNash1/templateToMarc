@@ -9,6 +9,10 @@ import { allRecordIndices } from './record-scope.js';
  */
 
 /**
+ * @typedef {'all'|'bibliographic'|'authority'|'holdings'} ScopeRecordTypeFilter
+ */
+
+/**
  * @typedef {Object} AppState
  * @property {MarcRecord[]} marcRecords
  * @property {ParsedRow[]} parsedRows
@@ -18,6 +22,11 @@ import { allRecordIndices } from './record-scope.js';
  * @property {'bibliographic'|'authority'|'holdings'} defaultRecordType
  * @property {RecordScopeMode} recordScopeMode
  * @property {Set<number>} scopedRecordIndices
+ * @property {ScopeRecordTypeFilter} scopeRecordTypeFilter
+ * @property {'cataloguing'|'strict'|'spreadsheet-import'} validationProfile
+ * @property {'all'|'scope'|'visible'} exportScopeMode
+ * @property {'form'|'mnemonic'} editorViewMode
+ * @property {Record<string, string>} columnMappingOverrides
  */
 
 /** @type {AppState} */
@@ -30,6 +39,11 @@ const state = {
   defaultRecordType: 'bibliographic',
   recordScopeMode: 'custom',
   scopedRecordIndices: new Set(),
+  scopeRecordTypeFilter: 'all',
+  validationProfile: 'cataloguing',
+  exportScopeMode: 'all',
+  editorViewMode: 'form',
+  columnMappingOverrides: {},
 };
 
 export function getState() {

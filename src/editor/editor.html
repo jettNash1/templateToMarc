@@ -25,8 +25,11 @@
     <nav class="app-nav" aria-label="MARCLite sections">
       <button type="button" class="nav-tab active" data-tab="convert">Convert</button>
       <button type="button" class="nav-tab" data-tab="edit">Edit</button>
+      <button type="button" class="nav-tab" data-tab="order">Order</button>
       <button type="button" class="nav-tab" data-tab="batch">Batch</button>
       <button type="button" class="nav-tab" data-tab="cleanup">Cleanup</button>
+      <button type="button" class="nav-tab" data-tab="export">Export</button>
+      <button type="button" class="nav-tab" data-tab="compare">Compare</button>
       <button type="button" class="nav-tab" data-tab="help">Help</button>
     </nav>
 
@@ -57,8 +60,34 @@
             <a class="sample-link" href="BookDonationTemplate.xlsx">Download example spreadsheet</a>
             · Spreadsheet row 1 uses MARC notation headers; MARC files open directly for editing.
           </p>
+          <div class="session-actions toolbar-bar">
+            <button type="button" id="save-session" class="secondary">Save session (.marclite.json)</button>
+            <label class="secondary file-button">
+              Load session
+              <input id="file-input-session" type="file" accept=".json,.marclite.json" aria-label="Load MARCLite session file" />
+            </label>
+            <button type="button" id="restore-draft" class="secondary">Restore draft</button>
+            <button type="button" id="clear-draft" class="secondary">Clear draft</button>
+          </div>
+          <p id="draft-restore-prompt" class="meta-text hidden" role="status"></p>
         </section>
         <p id="upload-status" class="status-message" role="status" aria-live="polite"></p>
+        <section id="column-mapping-panel" class="panel column-mapping-panel hidden" aria-labelledby="column-mapping-heading">
+          <h3 id="column-mapping-heading">Column mapping</h3>
+          <p class="meta-text">Map spreadsheet columns to MARC notation before importing. Use notation like <code>245//$a</code> or <code>650/0$a</code>.</p>
+          <table class="column-mapping-table">
+            <thead>
+              <tr>
+                <th scope="col">Order</th>
+                <th scope="col">Column</th>
+                <th scope="col">MARC notation</th>
+              </tr>
+            </thead>
+            <tbody id="column-mapping-table"></tbody>
+          </table>
+          <p id="column-mapping-status" class="status-message" role="status" aria-live="polite"></p>
+          <button type="button" id="apply-column-mapping">Apply mapping &amp; import</button>
+        </section>
         <section id="mapping-summary" class="panel mapping-summary hidden" aria-labelledby="mapping-summary-heading">
           <h3 id="mapping-summary-heading">Column mapping</h3>
           <p id="mapping-summary-text" class="meta-text"></p>
@@ -69,17 +98,25 @@
       <section id="tab-edit" class="tab-panel" aria-labelledby="edit-tab-heading">
         <div class="edit-tab-toolbar panel">
           <h2 id="edit-tab-heading" class="edit-tab-heading">Edit records</h2>
-          <div class="editor-actions">
-            <label class="inline-label">
+          <div class="editor-actions toolbar-bar">
+            <label class="toolbar-field">
               Record type
-              <select id="record-type-select" aria-label="Default record type">
+              <select id="record-type-select" aria-label="Record type for new records">
                 <option value="bibliographic">Bibliographic</option>
                 <option value="authority">Authority</option>
                 <option value="holdings">Holdings</option>
               </select>
             </label>
-            <button id="new-record" type="button">New blank record</button>
+            <label id="new-record-template-field" class="toolbar-field hidden">
+              Template
+              <select id="new-record-template" aria-label="Saved record template">
+                <option value="">Blank (minimal fields)</option>
+              </select>
+            </label>
+            <button id="delete-record-template" type="button" class="secondary hidden" disabled title="Delete the selected saved template">Delete template</button>
+            <button id="new-record" type="button">New record</button>
           </div>
+          <p class="meta-text edit-tab-hint">Choose a <strong>record type</strong> and click <strong>New record</strong> for a minimal blank record. Save any open record as a template from the field editor to add reusable setups to the template list.</p>
         </div>
         <div id="edit-empty" class="panel empty-state">
           <p class="meta-text">Import a file on the Convert tab, or create a blank record above.</p>
@@ -90,8 +127,8 @@
               <h2 id="records-heading">Records</h2>
               <span id="record-count" class="badge"></span>
             </div>
-            <div class="record-filter-toolbar">
-              <label class="inline-label">
+            <div class="record-filter-toolbar toolbar-bar toolbar-bar--boxed">
+              <label class="toolbar-field">
                 Filter
                 <select id="record-type-filter" aria-label="Filter records by type">
                   <option value="all">All types</option>
@@ -100,14 +137,28 @@
                   <option value="holdings">Holdings</option>
                 </select>
               </label>
+              <label class="toolbar-field">
+                Search
+                <input id="record-search" type="search" placeholder="Title, author, tag…" aria-label="Search records" />
+              </label>
+              <label class="toolbar-field">
+                Validation
+                <select id="validation-profile" aria-label="Validation profile">
+                  <option value="cataloguing">Cataloguing</option>
+                  <option value="strict">Strict</option>
+                  <option value="spreadsheet-import">Spreadsheet import</option>
+                </select>
+              </label>
             </div>
-            <div class="record-toolbar">
+            <div class="record-toolbar toolbar-bar">
               <button id="duplicate-record" type="button" class="secondary">Duplicate</button>
-              <button id="duplicate-undo" type="button" class="secondary hidden">Undo duplicate</button>
               <button id="delete-records" type="button" class="secondary danger">Delete</button>
             </div>
-            <p id="duplicate-status" class="status-message duplicate-status hidden" role="status" aria-live="polite"></p>
-            <div class="record-scope-toolbar">
+            <div id="duplicate-status" class="duplicate-status-row hidden" role="status" aria-live="polite">
+              <span id="duplicate-status-text" class="duplicate-status-text"></span>
+              <button id="duplicate-undo" type="button" class="secondary">Undo duplicate</button>
+            </div>
+            <div class="record-scope-toolbar toolbar-bar">
               <button id="scope-select-all" type="button" class="secondary">Select all</button>
               <button id="scope-clear-selection" type="button" class="secondary">Clear selection</button>
               <span id="scope-selection-badge" class="badge" aria-live="polite">0 selected for batch</span>
@@ -120,8 +171,19 @@
                 <h2 id="editor-heading">Field editor</h2>
                 <p id="selected-record-meta" class="meta-text"></p>
                 <p id="autosave-status" class="autosave-status" role="status" aria-live="polite">Edits are saved automatically</p>
+                <p id="history-status" class="meta-text history-status" role="status" aria-live="polite"></p>
               </div>
-              <div class="editor-actions">
+              <div class="editor-actions toolbar-bar">
+                <label class="toolbar-field editor-view-toggle">
+                  <input type="radio" name="editor-view" id="editor-view-form" value="form" checked /> Form
+                </label>
+                <label class="toolbar-field editor-view-toggle">
+                  <input type="radio" name="editor-view" id="editor-view-mnemonic" value="mnemonic" /> Mnemonic
+                </label>
+                <button id="mnemonic-sync" type="button" class="secondary hidden">Sync mnemonic</button>
+                <button id="paste-field" type="button" class="secondary">Paste field</button>
+                <button id="history-undo" type="button" class="secondary" disabled title="Undo the last edit, batch, or cleanup operation">Undo</button>
+                <button id="save-as-template" type="button" class="secondary" title="Save this record's leader and fields as a reusable template">Save as template</button>
                 <button id="save-record" type="button" class="secondary">Save record</button>
                 <button id="prev-record" type="button">Previous</button>
                 <button id="next-record" type="button">Next</button>
@@ -130,44 +192,37 @@
             </div>
             <div id="leader-editor" class="leader-editor"></div>
             <div id="field-editor" class="field-editor"></div>
+            <div id="mnemonic-editor-panel" class="mnemonic-editor-panel hidden"></div>
             <section class="preview-panel" aria-labelledby="preview-heading">
               <h3 id="preview-heading">MARC21 preview</h3>
               <pre id="marc-preview" class="marc-preview"></pre>
-            </section>
-            <section class="export-panel" aria-labelledby="export-heading">
-              <h3 id="export-heading">Export</h3>
-              <div class="export-actions">
-                <label class="inline-label">
-                  Format
-                  <select id="export-format" aria-label="Export format">
-                    <option value="mrk">MARC mnemonic (.mrk)</option>
-                    <option value="mrc">MARC binary (.mrc)</option>
-                    <option value="xml">MARCXML (.xml)</option>
-                    <option value="csv">Delimited CSV</option>
-                    <option value="json">JSON</option>
-                    <option value="dublin-core">Dublin Core (XML)</option>
-                    <option value="mods">MODS (XML)</option>
-                    <option value="bibframe">BIBFRAME (JSON)</option>
-                  </select>
-                </label>
-                <label class="toggle">
-                  <input id="block-invalid-export" type="checkbox" />
-                  Block export on validation errors
-                </label>
-                <button id="export-records" type="button">Export records</button>
-              </div>
-              <section class="export-preview-wrap" aria-labelledby="export-preview-heading">
-                <h4 id="export-preview-heading">Export preview</h4>
-                <pre id="export-preview" class="export-preview" aria-live="polite">Load records to preview export output.</pre>
-              </section>
-              <p class="meta-text">Exports include all loaded records.</p>
             </section>
           </section>
         </div>
       </section>
 
-      <section id="tab-batch" class="tab-panel" aria-labelledby="batch-heading">
+      <section id="tab-order" class="tab-panel" aria-labelledby="order-heading">
         <section class="panel">
+          <h2 id="order-heading">Record order</h2>
+          <p class="meta-text">Change the sequence of loaded records. Record numbers used in batch scope, export, and compare follow this order.</p>
+          <p id="order-status" class="status-message" role="status" aria-live="polite"></p>
+          <ul id="record-order-list" class="record-order-list" aria-label="Record order"></ul>
+          <p id="order-empty" class="meta-text">Load or create records on the Edit tab to reorder them here.</p>
+        </section>
+      </section>
+
+      <section id="tab-batch" class="tab-panel" aria-labelledby="batch-presets-heading">
+        <section class="panel" aria-labelledby="batch-presets-heading">
+          <h2 id="batch-presets-heading">Batch presets</h2>
+          <p class="meta-text">Save and reuse common find/replace setups. Presets store find/replace text, tag filters, and scope settings from the batch form below.</p>
+          <div class="batch-preset-actions editor-actions toolbar-bar">
+            <select id="batch-preset-select" aria-label="Load batch preset"><option value="">Load preset…</option></select>
+            <button type="button" id="batch-preset-load" class="secondary">Load</button>
+            <button type="button" id="batch-preset-save" class="secondary">Save preset</button>
+            <button type="button" id="batch-preset-delete" class="secondary danger">Delete</button>
+          </div>
+        </section>
+        <section class="panel" aria-labelledby="batch-heading">
           <h2 id="batch-heading">Batch editing</h2>
           <p class="meta-text">Apply find/replace across leaders, control fields, indicators, subfield codes, and values.</p>
           <form id="batch-form" class="batch-form">
@@ -182,6 +237,15 @@
                 <label>Records<input id="batch-scope-text" class="scope-text-input" type="text" placeholder="e.g. 1-75 or 1, 6, 17" aria-label="Custom record scope for batch" /></label>
                 <button type="button" id="batch-scope-apply" class="secondary">Apply scope</button>
               </div>
+              <label class="inline-label scope-type-filter-label">
+                Record type
+                <select id="batch-scope-type-filter" class="scope-type-filter" aria-label="Filter batch operations by record type">
+                  <option value="all">All types</option>
+                  <option value="bibliographic">Bibliographic</option>
+                  <option value="authority">Authority</option>
+                  <option value="holdings">Holdings</option>
+                </select>
+              </label>
             </fieldset>
             <div class="field-grid">
               <label>Find<input id="batch-find" type="text" aria-label="Find text" /></label>
@@ -189,7 +253,7 @@
               <label>Tag filter<input id="batch-tag" type="text" maxlength="3" placeholder="650" aria-label="Optional tag filter" /></label>
               <label>Subfield<input id="batch-subfield" type="text" maxlength="1" placeholder="a" aria-label="Optional subfield filter" /></label>
             </div>
-            <p class="meta-text">Find text is matched literally by default. Patterns like <code>\d+</code>, <code>[A-Z]+</code>, or <code>/pattern/</code> are treated as regular expressions automatically.</p>
+            <p class="meta-text">Find text is matched literally by default. Patterns like <code>\d+</code>, <code>[A-Z]+</code>, or <code>/pattern/</code> are treated as regular expressions automatically. Leave <strong>Find</strong> empty with <strong>Tag</strong> and <strong>Subfield</strong> set to replace the entire subfield value in scoped records (use <strong>Replace</strong> as the new value).</p>
             <fieldset class="batch-targets">
               <legend>Update targets</legend>
               <label class="toggle"><input type="checkbox" id="batch-target-leader" checked />Leader</label>
@@ -202,7 +266,7 @@
             <p class="meta-text">Changing subfield codes can break MARC structure — use with care.</p>
             <div class="editor-actions">
               <button type="button" id="batch-preview-btn">Preview changes</button>
-              <button type="button" id="batch-apply-btn">Apply find/replace</button>
+              <button type="button" id="batch-apply-btn">Apply changes</button>
               <button type="button" id="batch-normalize-btn" class="secondary">Normalize all records</button>
               <button type="button" id="batch-delete-tag-btn" class="secondary danger">Delete tag from all</button>
             </div>
@@ -240,6 +304,15 @@
               <label>Records<input id="cleanup-scope-text" class="scope-text-input" type="text" placeholder="e.g. 1-75 or 1, 6, 17" aria-label="Custom record scope for cleanup" /></label>
               <button type="button" id="cleanup-scope-apply" class="secondary">Apply scope</button>
             </div>
+            <label class="inline-label scope-type-filter-label">
+              Record type
+              <select id="cleanup-scope-type-filter" class="scope-type-filter" aria-label="Filter cleanup operations by record type">
+                <option value="all">All types</option>
+                <option value="bibliographic">Bibliographic</option>
+                <option value="authority">Authority</option>
+                <option value="holdings">Holdings</option>
+              </select>
+            </label>
           </fieldset>
           <button id="preview-cleanup" type="button">Preview cleanup</button>
           <button id="run-cleanup" type="button">Apply cleanup</button>
@@ -254,6 +327,100 @@
         </section>
       </section>
 
+      <section id="tab-export" class="tab-panel" aria-labelledby="export-heading">
+        <section class="panel export-panel" aria-labelledby="export-heading">
+          <h2 id="export-heading">Export records</h2>
+          <p class="meta-text">Download loaded records in MARC or converted metadata formats. Choose which records to include, then pick a format.</p>
+          <fieldset class="record-scope-fieldset" data-scope-panel="export">
+            <legend>Record scope</legend>
+            <div class="record-scope-modes">
+              <label class="radio-label"><input type="radio" name="export-record-scope-mode" value="all" />All records</label>
+              <label class="radio-label"><input type="radio" name="export-record-scope-mode" value="custom" checked />Custom scope</label>
+              <label class="radio-label"><input type="radio" name="export-record-scope-mode" value="current" />Current record only</label>
+            </div>
+            <div class="record-scope-custom-row">
+              <label>Records<input id="export-scope-text" class="scope-text-input" type="text" placeholder="e.g. 1-75 or 1, 6, 17" aria-label="Custom record scope for export" /></label>
+              <button type="button" id="export-scope-apply" class="secondary">Apply scope</button>
+            </div>
+            <label class="inline-label scope-type-filter-label">
+              Record type
+              <select id="export-scope-type-filter" class="scope-type-filter" aria-label="Filter export scope by record type">
+                <option value="all">All types</option>
+                <option value="bibliographic">Bibliographic</option>
+                <option value="authority">Authority</option>
+                <option value="holdings">Holdings</option>
+              </select>
+            </label>
+          </fieldset>
+          <fieldset class="export-scope-fieldset toolbar-bar">
+            <legend>Export range</legend>
+            <label class="radio-label"><input type="radio" name="export-scope" value="all" checked />All records</label>
+            <label class="radio-label"><input type="radio" name="export-scope" value="scope" />Scoped records above</label>
+            <label class="radio-label"><input type="radio" name="export-scope" value="visible" />Visible in list</label>
+          </fieldset>
+          <fieldset class="export-actions toolbar-bar">
+            <legend>Export options</legend>
+            <label class="toolbar-field">
+              Format
+              <select id="export-format" aria-label="Export format">
+                <option value="mrk">MARC mnemonic (.mrk)</option>
+                <option value="mrc">MARC binary (.mrc)</option>
+                <option value="xml">MARCXML (.xml)</option>
+                <option value="csv">Delimited CSV</option>
+                <option value="json">JSON</option>
+                <option value="dublin-core">Dublin Core (XML)</option>
+                <option value="mods">MODS (XML)</option>
+                <option value="bibframe">BIBFRAME (JSON)</option>
+              </select>
+            </label>
+            <label class="toggle">
+              <input id="block-invalid-export" type="checkbox" />
+              Block export on validation errors
+            </label>
+            <button id="export-records" type="button">Export records</button>
+            <button
+              id="check-links"
+              type="button"
+              class="secondary"
+              title="Checks http(s) URLs in MARC field 856 subfield $u within the export scope above."
+            >
+              Check URL links
+            </button>
+          </fieldset>
+          <p id="link-check-status" class="meta-text" role="status"></p>
+          <ul id="link-check-results" class="link-check-results"></ul>
+          <section class="export-preview-wrap" aria-labelledby="export-preview-heading">
+            <h3 id="export-preview-heading">Export preview</h3>
+            <pre id="export-preview" class="export-preview" aria-live="polite">Load records to preview export output.</pre>
+          </section>
+          <p class="meta-text">Use <strong>Record scope</strong> to specify which records batch, cleanup, and export operations target. <strong>Export range</strong> chooses whether to export all loaded records, the scoped set, or only records visible in the Edit list. URL link checking follows the export range.</p>
+        </section>
+      </section>
+
+      <section id="tab-compare" class="tab-panel" aria-labelledby="compare-heading">
+        <section class="panel compare-panel">
+          <h2 id="compare-heading">Compare records</h2>
+          <p class="meta-text">View two records side by side as MARC mnemonic text. Pick records by number and title from the loaded set.</p>
+          <div class="compare-controls toolbar-bar">
+            <label class="toolbar-field">Record A<select id="compare-record-a" aria-label="First record to compare"></select></label>
+            <label class="toolbar-field">Record B<select id="compare-record-b" aria-label="Second record to compare"></select></label>
+            <button id="compare-records" type="button">Compare</button>
+            <button id="compare-use-selected" type="button" class="secondary">Use current record as A</button>
+          </div>
+          <div id="compare-results" class="compare-results hidden" aria-live="polite">
+            <div class="compare-pane">
+              <h3 id="compare-label-a" class="compare-pane-title">Record A</h3>
+              <pre id="compare-text-a" class="compare-output"></pre>
+            </div>
+            <div class="compare-pane">
+              <h3 id="compare-label-b" class="compare-pane-title">Record B</h3>
+              <pre id="compare-text-b" class="compare-output"></pre>
+            </div>
+          </div>
+          <p id="compare-placeholder" class="meta-text">Select two records and click Compare.</p>
+        </section>
+      </section>
+
       <section id="tab-help" class="tab-panel" aria-labelledby="help-heading">
         <section class="panel help-panel">
           <h2 id="help-heading">Help &amp; tutorial</h2>
@@ -262,12 +429,17 @@
           <nav class="help-toc" aria-label="Help contents">
             <a href="#help-convert">Convert</a>
             <a href="#help-edit">Edit</a>
+            <a href="#help-order">Order</a>
             <a href="#help-leader-008">Leader &amp; 008</a>
             <a href="#help-indicators">Indicators &amp; field tags</a>
             <a href="#help-validation">Validation</a>
             <a href="#help-batch">Batch</a>
             <a href="#help-cleanup">Cleanup</a>
             <a href="#help-export">Export</a>
+            <a href="#help-compare">Compare</a>
+            <a href="#help-session">Sessions &amp; drafts</a>
+            <a href="#help-shortcuts">Keyboard shortcuts</a>
+            <a href="#help-stats">Statistics</a>
           </nav>
 
           <details id="help-convert" class="help-section" open>
@@ -275,23 +447,31 @@
             <div class="help-section-body">
               <p>Upload a file on the <strong>Convert</strong> tab by dropping it on the upload zone or clicking to browse. The format is detected from the file extension:</p>
               <ul>
-                <li><strong>Spreadsheets</strong> (.csv, .xlsx, .xls) — row 1 must contain MARC notation headers such as <code>245//$a</code> (title), <code>1001/$a</code> (author), or <code>650/0$a</code> (subject). Each following row becomes one record. Columns without MARC notation are skipped and listed under "Column mapping".</li>
+                <li><strong>Spreadsheets</strong> (.csv, .xlsx, .xls) — row 1 must contain MARC notation headers such as <code>245//$a</code> (title), <code>1001/$a</code> (author), or <code>650/0$a</code> (subject). Each following row becomes one record. Columns without MARC notation open the <strong>Column mapping</strong> panel so you can assign notation and reorder columns before import.</li>
                 <li><strong>MARC files</strong> (.mrc, .mrk, .xml, .txt) — opened directly. The record type (bibliographic, authority, holdings) is detected from the Leader, and fixed fields are padded to their correct MARC21 lengths.</li>
               </ul>
               <p>After a successful import you are taken to the Edit tab automatically. A "Download example spreadsheet" link on the Convert tab shows the expected header layout.</p>
+              <p><strong>Save session</strong> downloads a <code>.marclite.json</code> file with all records and settings. <strong>Load session</strong> restores from that file. <strong>Restore draft</strong> reloads the auto-saved browser draft — if your current session differs, you can discard current records, merge with the draft, or overwrite completely.</p>
             </div>
           </details>
 
           <details id="help-edit" class="help-section">
             <summary>Edit — records and fields</summary>
             <div class="help-section-body">
-              <p>The Edit tab has two panels:</p>
+              <p>The Edit tab has a toolbar for creating records and a two-panel workspace:</p>
               <ul>
-                <li><strong>Records list</strong> (left) — click a record to open it. Use the <strong>Filter</strong> dropdown to show only bibliographic, authority, or holdings records. <strong>Duplicate</strong> copies the selected records (with Undo), and <strong>Delete</strong> removes them after confirmation. The checkboxes select records for Batch and Cleanup operations ("Select all" / "Clear selection").</li>
-                <li><strong>Field editor</strong> (right) — edit the open record. <strong>Save record</strong> normalizes and re-validates; other edits save automatically. <strong>Previous/Next</strong> steps through records. <strong>Add MARC field</strong> opens a dialog for adding a data field (tag, indicators, subfields) or a control field (tag, value). Each field card has a <strong>Remove</strong> button; data fields also have <strong>Add subfield</strong>.</li>
+                <li><strong>New record toolbar</strong> — choose a <strong>Record type</strong> and click <strong>New record</strong> for a minimal blank record. After you <strong>Save as template</strong> from the field editor, saved setups appear in the <strong>Template</strong> dropdown (filtered by record type) so you can create new records from them.</li>
+                <li><strong>Records list</strong> (left) — click a record to open it. Use <strong>Filter</strong>, <strong>Search</strong> (title, author, tag text), and <strong>Validation</strong> profile to narrow the list. <strong>Duplicate</strong> copies scoped/selected records; an <strong>Undo duplicate</strong> option appears after duplicating. <strong>Delete</strong> removes records after confirmation. Checkboxes (with <strong>Select all</strong> / <strong>Clear selection</strong>) define scope for Batch, Cleanup, and Export.</li>
+                <li><strong>Field editor</strong> (right) — edit the open record in <strong>Form</strong> or <strong>Mnemonic</strong> view. <strong>Save as template</strong> stores the current leader and field layout (001/005 cleared) for reuse when creating records. Edits save automatically; <strong>Save record</strong> normalizes and re-validates. <strong>Undo</strong> reverts the last field edit, batch, or cleanup. <strong>Paste field</strong> inserts a copied field. <strong>Previous/Next</strong> step through the filtered list. <strong>Add MARC field</strong> opens a dialog for data or control fields. Each field card has <strong>Remove</strong>; data fields also have <strong>Add subfield</strong>, reorder, duplicate, and copy actions.</li>
               </ul>
-              <p><strong>New blank record</strong> at the top creates a record from a template — choose bibliographic, authority, or holdings with the Record type dropdown first.</p>
               <p>The <strong>MARC21 preview</strong> below the editor updates live as you type.</p>
+            </div>
+          </details>
+
+          <details id="help-order" class="help-section">
+            <summary>Order — rearranging records</summary>
+            <div class="help-section-body">
+              <p>The <strong>Order</strong> tab lets you change the sequence of loaded records after import. Use <strong>Move up</strong> / <strong>Move down</strong>, or enter a target position and click <strong>Move</strong>. Record numbers shown throughout MARCLite (batch scope, export, compare) follow this order.</p>
             </div>
           </details>
 
@@ -325,12 +505,13 @@
           <details id="help-validation" class="help-section">
             <summary>Validation — finding and fixing issues</summary>
             <div class="help-section-body">
-              <p>Records are validated continuously — on import, creation, and every edit. Results appear in the banner beneath the navigation tabs:</p>
+              <p>Records are validated continuously — on import, creation, and every edit. Choose a <strong>Validation</strong> profile on the Edit tab (<em>Cataloguing</em>, <em>Strict</em>, or <em>Spreadsheet import</em>). Results appear in the banner beneath the navigation tabs:</p>
               <ul>
                 <li><strong>Red</strong> issues are errors (structurally invalid MARC); <strong>amber</strong> issues are warnings (unusual but legal).</li>
                 <li>Click the banner to expand the full list. Issues affecting several records are grouped with a record range.</li>
                 <li>Every issue includes a <strong>"How to fix"</strong> hint explaining where in the tool to correct it.</li>
                 <li>Click an issue to jump directly to the affected record and field, which is highlighted and focused.</li>
+                <li>Some issues offer a one-click <strong>Fix</strong> button in the banner.</li>
                 <li>Grouped issues offer a <strong>Batch edit</strong> button that pre-fills the Batch tab with the right scope and targets.</li>
               </ul>
               <p>Invalid inputs are outlined in red (errors) or amber (warnings) inside the field editor as you type.</p>
@@ -340,11 +521,12 @@
           <details id="help-batch" class="help-section">
             <summary>Batch — bulk find &amp; replace</summary>
             <div class="help-section-body">
-              <p>The Batch tab applies changes to many records at once.</p>
+              <p>The Batch tab has two areas: <strong>Batch presets</strong> at the top for saving and loading common find/replace setups, and <strong>Batch editing</strong> below for running operations.</p>
               <ul>
                 <li><strong>Record scope</strong> — all records, a custom range (e.g. <code>1-75</code> or <code>1, 6, 17</code>), or the current record. You can also tick record checkboxes on the Edit tab.</li>
+                <li><strong>Record type</strong> — optionally limit batch operations to bibliographic, authority, or holdings records within the scope above.</li>
                 <li><strong>Find/Replace</strong> — matched literally by default; patterns like <code>\d+</code> or <code>/pattern/</code> are detected as regular expressions automatically.</li>
-                <li><strong>Tag and subfield filters</strong> — restrict the operation, e.g. tag <code>650</code> subfield <code>a</code>.</li>
+                <li><strong>Tag and subfield filters</strong> — restrict find/replace, e.g. tag <code>650</code> subfield <code>a</code>. Leave <strong>Find</strong> empty with both set to replace the entire subfield value (use <strong>Replace</strong> as the new value).</li>
                 <li><strong>Update targets</strong> — choose what to touch: leader, control values/tags, indicators, subfield codes/values.</li>
                 <li><strong>Preview changes</strong> shows the diff before applying; <strong>Undo all</strong> reverts an applied batch.</li>
               </ul>
@@ -355,7 +537,7 @@
           <details id="help-cleanup" class="help-section">
             <summary>Cleanup — standardising data</summary>
             <div class="help-section-body">
-              <p>The Cleanup tab fixes common metadata problems in the scoped records. Toggle which fixes run:</p>
+              <p>The Cleanup tab fixes common metadata problems in the scoped records. Use the same <strong>Record scope</strong> and <strong>Record type</strong> controls as Batch to limit which records are affected. Toggle which fixes run:</p>
               <ul>
                 <li><strong>Remove duplicate fields</strong> — identical repeated fields are dropped.</li>
                 <li><strong>Standardize punctuation</strong> — trailing punctuation follows MARC conventions.</li>
@@ -370,7 +552,13 @@
           <details id="help-export" class="help-section">
             <summary>Export — saving your records</summary>
             <div class="help-section-body">
-              <p>The Export panel lives at the bottom of the Edit tab. Choose a format and select <strong>Export records</strong>:</p>
+              <p>The <strong>Export</strong> tab has three control areas:</p>
+              <ul>
+                <li><strong>Record scope</strong> — specify record numbers (e.g. <code>1-75</code>) and optionally filter by record type, same as Batch/Cleanup.</li>
+                <li><strong>Export range</strong> — export all loaded records, the scoped set above, or only records visible in the Edit list.</li>
+                <li><strong>Export options</strong> — pick a format, optionally block export on validation errors, export, or check 856 $u URL links within the chosen range.</li>
+              </ul>
+              <p>Supported formats:</p>
               <ul>
                 <li><strong>MARC mnemonic (.mrk)</strong> — human-readable text, compatible with MarcEdit.</li>
                 <li><strong>MARC binary (.mrc)</strong> — the standard ILS interchange format.</li>
@@ -378,7 +566,51 @@
                 <li><strong>CSV / JSON</strong> — delimited or structured data for spreadsheets and scripts.</li>
                 <li><strong>Dublin Core / MODS / BIBFRAME</strong> — converted metadata formats.</li>
               </ul>
-              <p>The <strong>Export preview</strong> shows a live sample of the output. Tick <strong>"Block export on validation errors"</strong> to prevent exporting records with structural problems. Exports always include all loaded records.</p>
+              <p>The <strong>Export preview</strong> shows a live sample of the output. Tick <strong>"Block export on validation errors"</strong> to prevent exporting records with structural problems. <strong>Check URL links</strong> uses the same export range and inspects http(s) addresses in MARC field 856 subfield $u.</p>
+            </div>
+          </details>
+
+          <details id="help-compare" class="help-section">
+            <summary>Compare — side-by-side records</summary>
+            <div class="help-section-body">
+              <p>The <strong>Compare</strong> tab shows two records as MARC mnemonic text in side-by-side panels. Choose records from the dropdowns (shown as <em>number — title</em>) and click <strong>Compare</strong>, or use <strong>Use current record as A</strong> to start from the record open in the Edit tab.</p>
+            </div>
+          </details>
+
+          <details id="help-session" class="help-section">
+            <summary>Sessions &amp; drafts — saving your work</summary>
+            <div class="help-section-body">
+              <p>MARCLite auto-saves a draft to browser storage as you work (about every 1.5 seconds). On the Convert tab:</p>
+              <ul>
+                <li><strong>Save session</strong> — download a portable <code>.marclite.json</code> file with records, scope, validation profile, and column mapping settings.</li>
+                <li><strong>Load session</strong> — restore from a saved session file.</li>
+                <li><strong>Restore draft</strong> — reload the auto-saved draft. If your current session differs, choose to delete new records and restore the draft, merge draft with current records, overwrite completely, or cancel.</li>
+                <li><strong>Clear draft</strong> — remove the auto-saved draft from browser storage.</li>
+              </ul>
+              <p>If you create a new record and the draft no longer matches what you expect, the auto-save may have updated the stored draft — use <strong>Save session</strong> regularly for a backup you control.</p>
+            </div>
+          </details>
+
+          <details id="help-shortcuts" class="help-section">
+            <summary>Keyboard shortcuts</summary>
+            <div class="help-section-body">
+              <table class="shortcuts-table">
+                <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
+                <tbody>
+                  <tr><td>Ctrl/Cmd+S</td><td>Save current record</td></tr>
+                  <tr><td>Ctrl/Cmd+↑ or Alt+↑</td><td>Previous record in filtered list</td></tr>
+                  <tr><td>Ctrl/Cmd+↓ or Alt+↓</td><td>Next record in filtered list</td></tr>
+                  <tr><td>Ctrl/Cmd+Enter</td><td>Jump to next validation issue in filtered set</td></tr>
+                  <tr><td>Escape</td><td>Close open modal</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+
+          <details id="help-stats" class="help-section">
+            <summary>Statistics</summary>
+            <div class="help-section-body" id="stats-output">
+              <p class="meta-text">Load records and open this section to see tag frequency and completeness stats.</p>
             </div>
           </details>
         </section>
@@ -412,6 +644,20 @@
             <button type="submit">Add field</button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <div id="restore-draft-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="restore-draft-title">
+      <div class="modal-backdrop" data-close-restore-draft tabindex="-1" aria-hidden="true"></div>
+      <div class="modal-card">
+        <h2 id="restore-draft-title">Restore saved draft</h2>
+        <p id="restore-draft-message" class="meta-text"></p>
+        <div class="modal-actions restore-draft-actions">
+          <button type="button" id="restore-draft-delete-new" class="secondary">Delete new records &amp; restore draft</button>
+          <button type="button" id="restore-draft-merge" class="secondary">Keep current &amp; merge with draft</button>
+          <button type="button" id="restore-draft-overwrite">Overwrite with draft</button>
+          <button type="button" class="secondary" data-close-restore-draft>Cancel</button>
+        </div>
       </div>
     </div>
 
